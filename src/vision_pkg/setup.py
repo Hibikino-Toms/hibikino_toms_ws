@@ -32,6 +32,8 @@ setup(
             'cam_pub_service = vision_pkg.cam_pub_service:main',
             # 追加2026/03/04, カメラ視点の切り替え追加
             'cam_pub_service_rev2 = vision_pkg.cam_pub_service_rev2:main',
+            'vision_service_ipad_dual_topic = vision_pkg.vision_service_ipad_dual_topic:main',
+            'vision_service_bench = vision_pkg.vision_service_bench:main',
         ],
     },
 )

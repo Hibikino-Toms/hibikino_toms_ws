@@ -76,7 +76,8 @@ dxl_params:
     #U2D2_SERIAL_NUMBER: "FT6RWCQV"
     # U2D2_SERIAL_NUMBER: "FT88YXAC"
     # U2D2_SERIAL_NUMBER: "FTA7NN47"
-    U2D2_SERIAL_NUMBER: "FTAK882J"
+    # U2D2_SERIAL_NUMBER: "FTAK882J"
+    U2D2_SERIAL_NUMBER: "FTAK87XF"
 
     
     # Dynamixelの諸設定用のパラメータ
@@ -194,6 +195,7 @@ vision_params:
     # 推論パラメータ
     MODEL_INPUT_SIZE: 640
     WEIGHT_PATH: "/home/ylab/hibikino_toms_ws/module/weights/base.pt"     # 使用するモデルの重みのパス
+    #WEIGHT_PATH: "/home/ylab/hibikino_toms_ws/module/weights/best_song.pt"     # 使用するモデルの重みのパス
     # WEIGHT_PATH:  "/home/ylab/hibikino_toms_ws/module/weights/best_Add_data.pt"     # 使用するモデルの重みのパス
     # WEIGHT_PATH:  "/home/ylab/hibikino_toms_ws/module/weights/base.engine"     # TensorRT(Jetson向けのフォオーマット)モデル
     CONF_BASE_TH: 0.1

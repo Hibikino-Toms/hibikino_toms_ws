@@ -46,7 +46,20 @@ class Vision_Service(Node):
             qos_profile=qos_profile_services_default)
         
         # --- 追加：ストリーミング用パブリッシャーとサービス ---
-        self.pub = self.create_publisher(CompressedImage, '/camera/image/compressed', qos_profile_sensor_data)
+        # Existing display topic (selected camera).
+        self.pub = self.create_publisher(
+            CompressedImage,
+            '/camera/image/compressed',
+            qos_profile_sensor_data)
+        # Both camera streams are also published continuously.
+        self.pub_hand = self.create_publisher(
+            CompressedImage,
+            '/camera/hand/image/compressed',
+            qos_profile_sensor_data)
+        self.pub_over = self.create_publisher(
+            CompressedImage,
+            '/camera/over/image/compressed',
+            qos_profile_sensor_data)
         self.srv_onoff = self.create_service(SetBool, 'set_streaming', self.onoff_callback)
         self.srv_select = self.create_service(SetBool, 'switch_camera', self.select_callback)
 
@@ -84,15 +97,33 @@ class Vision_Service(Node):
         self.APPROACH_ANG = vision_params["APPROACH_ANG"]
 
         #library
-        self.realsense = Realsense_Module(camera_params)
+        # Keep both pipelines active.  self.realsense remains as the selected
+        # camera alias so all existing vision-processing functions keep their
+        # original behavior.
+        # Give each camera an independent parameter object.  This prevents a
+        # setup/calibration update in one Realsense_Module from changing the
+        # other camera's coordinate conversion state.
+        self.realsense_hand = Realsense_Module(copy.deepcopy(camera_params))
+        self.realsense_over = Realsense_Module(copy.deepcopy(camera_params))
+        self.realsense = None
         self.harvest_order = Harvest_Order(vision_params)
         self.ripeness_judge = Ripeness_Judge(vision_params)
         self.predict_extra = Predict_Extra(vision_params)
         self.angle_determiner = Approach_Angle_Determiner(camera_params)
 
         # --- 追加：初期化時にカメラを起動し、ストリーミングループ開始 ---
+        try:
+            self.realsense_hand.setup(self.serial_hand)
+            self.realsense_over.setup(self.serial_over)
+        except Exception:
+            self.release_realsense()
+            raise
+
         self.ensure_realsense(self.serial_hand)
-        self.timer = self.create_timer(1.0 / 15.0, self.streaming_loop)
+        self.timer_hand = self.create_timer(
+            1.0 / 15.0, self.streaming_loop_hand)
+        self.timer_over = self.create_timer(
+            1.0 / 15.0, self.streaming_loop_over)
 
         self.get_logger().info('統合ビジョンサーバ起動')
     
@@ -110,11 +141,29 @@ class Vision_Service(Node):
         return response
 
     def streaming_loop(self):
-        # 配信OFF時、またはカメラ未起動時はスキップ
+        """Compatibility entry point: publish the currently selected camera."""
         if not self.is_streaming or self.current_serial is None:
             return
+        if self.current_serial == self.serial_hand:
+            self.publish_camera_image(
+                self.realsense_hand, self.pub_hand, self.serial_hand)
+        else:
+            self.publish_camera_image(
+                self.realsense_over, self.pub_over, self.serial_over)
+
+    def streaming_loop_hand(self):
+        self.publish_camera_image(
+            self.realsense_hand, self.pub_hand, self.serial_hand)
+
+    def streaming_loop_over(self):
+        self.publish_camera_image(
+            self.realsense_over, self.pub_over, self.serial_over)
+
+    def publish_camera_image(self, realsense, camera_publisher, serial_no):
+        if not self.is_streaming:
+            return
         try:
-            color_img, _, _ = self.realsense.get_image(False)
+            color_img, _, _ = realsense.get_image(False)
             if color_img is not None:
                 ok, buf = cv2.imencode('.jpg', color_img, [int(cv2.IMWRITE_JPEG_QUALITY), self.q])
                 if ok:
@@ -122,9 +171,12 @@ class Vision_Service(Node):
                     msg.header.stamp = self.get_clock().now().to_msg()
                     msg.format = 'jpeg'
                     msg.data = buf.tobytes()
-                    self.pub.publish(msg)
+                    camera_publisher.publish(msg)
+                    if self.current_serial == serial_no:
+                        self.pub.publish(msg)
         except Exception as e:
-            pass
+            self.get_logger().warning(
+                f'Camera streaming error (S/N: {serial_no}): {e!r}')
     # ----------------------------------------------------
 
     @staticmethod
@@ -151,17 +203,38 @@ class Vision_Service(Node):
 
     # --- 変更：現在のカメラと同じなら再起動しない ---
     def ensure_realsense(self, serial_no : str):
+        if serial_no == self.serial_hand:
+            selected_realsense = self.realsense_hand
+            camera_name = 'hand'
+        elif serial_no == self.serial_over:
+            selected_realsense = self.realsense_over
+            camera_name = 'over'
+        else:
+            raise ValueError(f'Unknown RealSense serial number: {serial_no}')
+
         if self.current_serial != serial_no:
-            self.release_realsense()
-            self.get_logger().info(f"カメラ(S/N: {serial_no})に切り替えます...")
-            self.realsense.setup(serial_no)
-            self.current_serial = serial_no
-            time.sleep(1.0) # 露出安定待ち
+            self.get_logger().info(
+                f'Selecting {camera_name} camera (S/N: {serial_no})')
+
+        # Switching now changes only an object reference.  Both pipelines
+        # remain active, so there is no stop/setup or exposure wait.
+        self.realsense = selected_realsense
+        self.current_serial = serial_no
     
     def release_realsense(self):
-        if self.realsense is not None and self.current_serial is not None:
-            self.realsense.stop()
-            self.current_serial = None
+        for camera_name, realsense in (
+                ('hand', self.realsense_hand),
+                ('over', self.realsense_over)):
+            if realsense is None:
+                continue
+            try:
+                realsense.stop()
+            except Exception as e:
+                self.get_logger().warning(
+                    f'Failed to stop {camera_name} camera: {e!r}')
+
+        self.realsense = None
+        self.current_serial = None
 
     def create_output_directory(self, IMG_SAVE_DIR_PATH):
         date_str = datetime.now().strftime("%Y_%m_%d")

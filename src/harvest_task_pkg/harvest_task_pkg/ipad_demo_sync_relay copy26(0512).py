@@ -8,6 +8,7 @@ from playsound import playsound
 import time
 import numpy as np
 import yaml
+from std_srvs.srv import SetBool 
 
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -70,7 +71,13 @@ class HarvestGatewayNode(Node):
             ResetArmEnd,
             'reset_arm_end',
             self.reset_arm_end, callback_group=cbg
+        )
 
+        #カメラ切り替えサービス
+        self.cam_switch_client = self.create_client(
+            SetBool,
+            'switch_camera',
+            qos_profile=qos_profile_services_default, callback_group=cbg
         )
 
 
@@ -294,15 +301,20 @@ class HarvestGatewayNode(Node):
 
     def run_detect_phase(self):
         logger = self.get_logger()
-        self.arm_and_ee_send_request_init()
+        start_total = time.time() # 全体の計測開始
+        
+        # logger.info("=== [TIME] 1. arm_and_ee_send_request_init 開始 ===")
+        t0 = time.time()
+        # self.arm_and_ee_send_request_init()
+        # logger.info(f"=== [TIME] 1. 完了: {time.time() - t0:.3f} 秒 ===")
+
         # 俯瞰カメラでトマトチェック
-        print("今からチェックしに行きます")
+        logger.info("=== [TIME] 2. 俯瞰カメラでの検出 (vision_send_request_check) 開始 ===")
+        t1 = time.time()
         vis_res = self.vision_send_request_check()
-        print("俯瞰カメラでトマトをチェックしに行きましたよ")
-        print(f"vis_res = {vis_res}")
-        # logger().info(f"vis_res :{vis_res}")
+        logger.info(f"=== [TIME] 2. 完了: {time.time() - t1:.3f} 秒 ===")
+
         if vis_res is None or (not vis_res.detect_check):
-            print("vis_res is None")
             return {
                 "found" : False,
                 "message" : "トマトが見つかりませんでした",
@@ -313,34 +325,30 @@ class HarvestGatewayNode(Node):
         # 俯瞰カメラで得た1個目を「狙うべき株」として仮決め
         rough_target = vis_res.target_pos.tomato_data[0]
 
+        logger.info("=== [TIME] アーム移動の裏で手先カメラのウォームアップを開始 ===")
+        req = SetBool.Request()
+        req.data = True # True = 手先カメラ
+        self.cam_switch_client.call_async(req) # 非同期で呼び出す（返事を待たずにすぐ下に進む）
+
         # 2. アームを移動させる
+        logger.info("=== [TIME] 3. アームの移動 (arm_send_request_home) 開始 ===")
+        t2 = time.time()
         arm_home_res = self.arm_send_request_home(rough_target)
         pre_arm_hight = arm_home_res.tom_hight
+        logger.info(f"=== [TIME] 3. 完了: {time.time() - t2:.3f} 秒 ===")
 
         # 3. 手先カメラで詳細なトマト座標を得る
+        logger.info("=== [TIME] 4. 手先カメラでの検出 (vision_send_request_tompos) 開始 ===")
+        t3 = time.time()
         close_res = self.vision_send_request_tompos()
-        logger.info(f"手先カメラの詳細な情報を取得したよ: {close_res}")
-        # [x, y, z, 侵入角度]がトマトの個数分あるが、そのうち１個目を収穫ターゲットにする[0]
-        print("=========================================================")
-        precise_targets = close_res.target_pos.tomato_data # tomato_data[0]から変更した
-        logger.info(f"precese_targets : {precise_targets}")
-        # # 何もなかったら
-        # if len(precise_targets) == 0:
-        #     logger.info(f"近距離でトマトを再検出できませんでした")
-        #     return {
-        #         "found" : False,
-        #         "message" : "近距離でトマトを再検出できませんでした",
-        #         "targets" : [],
-        #         "pre_arm_height" : pre_arm_hight,
-        #     }
-        print("ここまで実行できました")
-        # 成功したので、ノード内に記憶しておく
-        # メンバ変数として記憶しておくことで、Harvest側でも使用できるようにしている
+        logger.info(f"=== [TIME] 4. 完了: {time.time() - t3:.3f} 秒 ===")
+        
+        precise_targets = close_res.target_pos.tomato_data
+        
         self.last_targets = precise_targets
         self.last_pre_arm_height = pre_arm_hight
 
-        # ros2 のデバックで表示する
-        # logger.info(f"{len(precise_targets)}個のトマトを検出")
+        logger.info(f"=== [TIME] ★ 検出フェーズ全体の合計処理時間: {time.time() - start_total:.3f} 秒 ===")
 
         return {
             "found" : True,

@@ -34,6 +34,7 @@ setup(
             'teleop_automation = teleop_demo_pkg.teleop_automation:main',
             'teleop_demo_launch = teleop_demo_pkg.teleop_demo_launch:main',
             'crawler_automation = teleop_demo_pkg.crawler_automation:main',
+            'crawler_automation_2 = teleop_demo_pkg.crawler_automation_2:main',
         ],
     },
 )

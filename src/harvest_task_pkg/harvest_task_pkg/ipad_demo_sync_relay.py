@@ -17,39 +17,8 @@ class HarvestGatewayNode(Node):
         super().__init__('harvest_gateway_node')
 
         cbg = ReentrantCallbackGroup()
-        self.vision_client = self.create_client(
-            VisionService,
-            "vision_service",
-            qos_profile = qos_profile_services_default, callback_group = cbg
-        )
-        while not self.vision_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info("ビジョンサーバ待機中...")
-        self.vision_request = VisionService.Request()
 
-        self.arm_client = self.create_client(
-            ArmService,
-            "arm_service",
-            qos_profile=qos_profile_services_default, callback_group = cbg)
-        while not self.arm_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('アームサーバ待機中...')
-        self.arm_request =  ArmService.Request()
-
-        self.ee_client = self.create_client(
-            SuctionCommand,
-            'command',
-            qos_profile=qos_profile_services_default, callback_group = cbg)
-        # playsound("/home/ylab/toms_ws/src/end_effector_pkg/end_effector_pkg/sound/サクションモジュールクライアントノードを起動したのだ.wav")
-        while not self.ee_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('EEサーバ待機中...')
-        # リクエストのインスタンスを生成
-        self.ee_request = SuctionCommand.Request()
-        
-
-
-        # self.arm_and_ee_send_request_init()
-
-
-        # 検出サービス
+# 検出サービス
         self.detect_srv = self.create_service(
             DetectTomato,
             'detect_tomato',
@@ -72,6 +41,62 @@ class HarvestGatewayNode(Node):
             self.reset_arm_end, callback_group=cbg
 
         )
+
+        self.vision_client = self.create_client(
+            VisionService,
+            "vision_service",
+            qos_profile = qos_profile_services_default, callback_group = cbg
+        )
+        # while not self.vision_client.wait_for_service(timeout_sec=1.0):
+        #     self.get_logger().info("ビジョンサーバ待機中...")
+        self.vision_request = VisionService.Request()
+
+        self.arm_client = self.create_client(
+            ArmService,
+            "arm_service",
+            qos_profile=qos_profile_services_default, callback_group = cbg)
+        # while not self.arm_client.wait_for_service(timeout_sec=1.0):
+        #     self.get_logger().info('アームサーバ待機中...')
+        self.arm_request =  ArmService.Request()
+
+        self.ee_client = self.create_client(
+            SuctionCommand,
+            'command',
+            qos_profile=qos_profile_services_default, callback_group = cbg)
+        # playsound("/home/ylab/toms_ws/src/end_effector_pkg/end_effector_pkg/sound/サクションモジュールクライアントノードを起動したのだ.wav")
+        # while not self.ee_client.wait_for_service(timeout_sec=1.0):
+        #     self.get_logger().info('EEサーバ待機中...')
+        # リクエストのインスタンスを生成
+        self.ee_request = SuctionCommand.Request()
+        
+
+
+        # self.arm_and_ee_send_request_init()
+
+
+        # # 検出サービス
+        # self.detect_srv = self.create_service(
+        #     DetectTomato,
+        #     'detect_tomato',
+        #     self.handle_detect_tomato, callback_group = cbg
+        # )
+
+        # # 収穫サービス 
+        # self.harvest_srv = self.create_service(
+        #     HarvestTomato,
+        #     'harvest_tomato',
+        #     self.handle_harvest_tomato, callback_group = cbg
+        # )
+
+        
+        
+        # # アームとエンドエフェクタのリセットサービス
+        # self.reset_srv = self.create_service(
+        #     ResetArmEnd,
+        #     'reset_arm_end',
+        #     self.reset_arm_end, callback_group=cbg
+
+        # )
 
 
     def vision_send_request_check(self):
