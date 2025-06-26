@@ -1,0 +1,2 @@
+id,conf,image_coords,ripeness,is_ripe,approach_ang,camera_coords,arm_coords,harvest_order
+T01,0.94540364,"[426, 199]",0.15000000000000002,True,0,"[89.0, -38.0, 390.0]","[89.0, 568.0, 138.0]",1

@@ -1,0 +1,6 @@
+string task
+string direction
+---
+bool detect_check
+TomatoPos target_pos 
+
