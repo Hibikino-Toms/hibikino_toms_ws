@@ -1,0 +1,6 @@
+[console_scripts]
+vision_client_d435_node = vision_pkg.vision_client_d435_node:main
+vision_client_node = vision_pkg.vision_client_node:main
+vision_service = vision_pkg.vision_service:main
+vision_service_d435 = vision_pkg.vision_service_d435:main
+

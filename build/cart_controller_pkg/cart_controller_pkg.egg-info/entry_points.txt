@@ -1,0 +1,6 @@
+[console_scripts]
+crawler_client_node = cart_controller_pkg.crawler_client_node:main
+crawler_service_node = cart_controller_pkg.crawler_service_node:main
+rail_client_node = cart_controller_pkg.rail_client_node:main
+rail_service_node = cart_controller_pkg.rail_service_node:main
+

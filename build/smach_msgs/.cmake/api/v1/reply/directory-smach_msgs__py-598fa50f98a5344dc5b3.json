@@ -1,0 +1,14 @@
+{
+	"backtraceGraph" : 
+	{
+		"commands" : [],
+		"files" : [],
+		"nodes" : []
+	},
+	"installers" : [],
+	"paths" : 
+	{
+		"build" : "smach_msgs__py",
+		"source" : "/home/ylab/hibikino_toms_ws/build/smach_msgs/smach_msgs__py"
+	}
+}

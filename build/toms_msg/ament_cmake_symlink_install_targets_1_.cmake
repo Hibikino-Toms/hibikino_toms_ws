@@ -1,0 +1,1 @@
+ament_cmake_symlink_install_targets("TARGET_FILES" "/home/ylab/hibikino_toms_ws/build/toms_msg/rosidl_generator_py/toms_msg/toms_msg_s__rosidl_typesupport_introspection_c.cpython-310-aarch64-linux-gnu.so" "TARGETS" "toms_msg__rosidl_typesupport_introspection_c__pyext" "DESTINATION" "local/lib/python3.10/dist-packages/toms_msg")

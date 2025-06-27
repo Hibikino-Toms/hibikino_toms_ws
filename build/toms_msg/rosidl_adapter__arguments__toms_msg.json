@@ -1,0 +1,14 @@
+{
+  "package_name": "toms_msg",
+  "non_idl_tuples": [
+    "/home/ylab/hibikino_toms_ws/src/toms_msg:msg/TomatoPos.msg",
+    "/home/ylab/hibikino_toms_ws/src/toms_msg:msg/TomatoData.msg",
+    "/home/ylab/hibikino_toms_ws/src/toms_msg:srv/VisionService.srv",
+    "/home/ylab/hibikino_toms_ws/src/toms_msg:srv/CrawlerService.srv",
+    "/home/ylab/hibikino_toms_ws/src/toms_msg:srv/RailService.srv",
+    "/home/ylab/hibikino_toms_ws/src/toms_msg:srv/ArmService.srv",
+    "/home/ylab/hibikino_toms_ws/src/toms_msg:srv/EndEffectorService.srv",
+    "/home/ylab/hibikino_toms_ws/src/toms_msg:srv/SuctionCommand.srv",
+    "/home/ylab/hibikino_toms_ws/src/toms_msg:srv/CartService.srv"
+  ]
+}

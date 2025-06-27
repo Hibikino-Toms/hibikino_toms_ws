@@ -1,0 +1,8 @@
+source;share/smach_viewer/hook/cmake_prefix_path.ps1
+source;share/smach_viewer/hook/cmake_prefix_path.dsv
+source;share/smach_viewer/hook/cmake_prefix_path.sh
+source;share/smach_viewer/local_setup.bash
+source;share/smach_viewer/local_setup.dsv
+source;share/smach_viewer/local_setup.ps1
+source;share/smach_viewer/local_setup.sh
+source;share/smach_viewer/local_setup.zsh

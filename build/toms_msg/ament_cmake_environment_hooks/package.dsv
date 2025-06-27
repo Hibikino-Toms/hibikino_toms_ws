@@ -1,0 +1,4 @@
+source;share/toms_msg/local_setup.bash
+source;share/toms_msg/local_setup.dsv
+source;share/toms_msg/local_setup.sh
+source;share/toms_msg/local_setup.zsh

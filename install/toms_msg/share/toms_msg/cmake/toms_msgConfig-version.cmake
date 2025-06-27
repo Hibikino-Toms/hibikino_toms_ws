@@ -1,0 +1,1 @@
+/home/ylab/hibikino_toms_ws/build/toms_msg/ament_cmake_core/toms_msgConfig-version.cmake

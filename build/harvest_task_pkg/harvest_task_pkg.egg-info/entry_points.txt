@@ -1,0 +1,7 @@
+[console_scripts]
+analyze_to_harvest_client = harvest_task_pkg.analyze_to_harvest_client:main
+demo = harvest_task_pkg.demo:main
+harvest_state_machine = harvest_task_pkg.harvest_state_machine:main
+harvest_state_machine_test = harvest_task_pkg.harvest_state_machine_test:main
+harvest_task_cart_state = harvest_task_pkg.harvest_task_cart_state:main
+

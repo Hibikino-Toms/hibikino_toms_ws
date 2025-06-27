@@ -1,0 +1,4 @@
+[console_scripts]
+move_cart_client = cart_module_ros2.move_cart_client:main
+move_cart_server = cart_module_ros2.move_cart_server:main
+

@@ -1,0 +1,21 @@
+// generated from rosidl_adapter/resource/srv.idl.em
+// with input from toms_msg/srv/CartService.srv
+// generated code does not contain a copyright notice
+
+
+module toms_msg {
+  module srv {
+    @verbatim (language="comment", text=
+      "request")
+    struct CartService_Request {
+      int16 move_value;
+
+      int16 pwm_value;
+    };
+    @verbatim (language="comment", text=
+      "response")
+    struct CartService_Response {
+      float move_result;
+    };
+  };
+};

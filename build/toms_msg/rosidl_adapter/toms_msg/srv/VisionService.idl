@@ -1,0 +1,20 @@
+// generated from rosidl_adapter/resource/srv.idl.em
+// with input from toms_msg/srv/VisionService.srv
+// generated code does not contain a copyright notice
+
+#include "toms_msg/msg/TomatoPos.idl"
+
+module toms_msg {
+  module srv {
+    struct VisionService_Request {
+      string task;
+
+      string direction;
+    };
+    struct VisionService_Response {
+      boolean detect_check;
+
+      toms_msg::msg::TomatoPos target_pos;
+    };
+  };
+};

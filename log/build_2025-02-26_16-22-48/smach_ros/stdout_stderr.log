@@ -1,0 +1,13 @@
+running develop
+running egg_info
+writing smach_ros.egg-info/PKG-INFO
+writing dependency_links to smach_ros.egg-info/dependency_links.txt
+writing requirements to smach_ros.egg-info/requires.txt
+writing top-level names to smach_ros.egg-info/top_level.txt
+reading manifest file 'smach_ros.egg-info/SOURCES.txt'
+writing manifest file 'smach_ros.egg-info/SOURCES.txt'
+running build_ext
+Creating /home/ylab/hibikino_toms_ws/install/smach_ros/lib/python3.10/site-packages/smach-ros.egg-link (link to .)
+
+Installed /home/ylab/hibikino_toms_ws/build/smach_ros
+running symlink_data

@@ -1,0 +1,19 @@
+[8.924s] Invoking command in '/home/ylab/hibikino_toms_ws/build/end_effector_pkg': PYTHONPATH=/home/ylab/hibikino_toms_ws/build/end_effector_pkg/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/ylab/hibikino_toms_ws/install/end_effector_pkg/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/ylab/hibikino_toms_ws/build/end_effector_pkg/build --no-deps symlink_data
+[9.698s] running develop
+[10.231s] running egg_info
+[10.232s] writing end_effector_pkg.egg-info/PKG-INFO
+[10.232s] writing dependency_links to end_effector_pkg.egg-info/dependency_links.txt
+[10.233s] writing entry points to end_effector_pkg.egg-info/entry_points.txt
+[10.233s] writing requirements to end_effector_pkg.egg-info/requires.txt
+[10.234s] writing top-level names to end_effector_pkg.egg-info/top_level.txt
+[10.240s] reading manifest file 'end_effector_pkg.egg-info/SOURCES.txt'
+[10.243s] writing manifest file 'end_effector_pkg.egg-info/SOURCES.txt'
+[10.249s] running build_ext
+[10.249s] Creating /home/ylab/hibikino_toms_ws/install/end_effector_pkg/lib/python3.10/site-packages/end-effector-pkg.egg-link (link to .)
+[10.252s] Installing suction_module_client_node script to /home/ylab/hibikino_toms_ws/install/end_effector_pkg/lib/end_effector_pkg
+[10.253s] Installing suction_module_node script to /home/ylab/hibikino_toms_ws/install/end_effector_pkg/lib/end_effector_pkg
+[10.253s] Installing suction_module_service_node script to /home/ylab/hibikino_toms_ws/install/end_effector_pkg/lib/end_effector_pkg
+[10.255s] 
+[10.255s] Installed /home/ylab/hibikino_toms_ws/build/end_effector_pkg
+[10.255s] running symlink_data
+[10.482s] Invoked command in '/home/ylab/hibikino_toms_ws/build/end_effector_pkg' returned '0': PYTHONPATH=/home/ylab/hibikino_toms_ws/build/end_effector_pkg/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/ylab/hibikino_toms_ws/install/end_effector_pkg/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/ylab/hibikino_toms_ws/build/end_effector_pkg/build --no-deps symlink_data

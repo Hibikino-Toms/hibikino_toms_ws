@@ -1,0 +1,4 @@
+# generated from rosidl_cmake/cmake/rosidl_cmake-extras.cmake.in
+
+set(toms_msg_IDL_FILES "msg/TomatoPos.idl;msg/TomatoData.idl;srv/VisionService.idl;srv/CrawlerService.idl;srv/RailService.idl;srv/ArmService.idl;srv/EndEffectorService.idl;srv/SuctionCommand.idl;srv/CartService.idl")
+set(toms_msg_INTERFACE_FILES "msg/TomatoPos.msg;msg/TomatoData.msg;srv/VisionService.srv;srv/VisionService_Request.msg;srv/VisionService_Response.msg;srv/CrawlerService.srv;srv/CrawlerService_Request.msg;srv/CrawlerService_Response.msg;srv/RailService.srv;srv/RailService_Request.msg;srv/RailService_Response.msg;srv/ArmService.srv;srv/ArmService_Request.msg;srv/ArmService_Response.msg;srv/EndEffectorService.srv;srv/EndEffectorService_Request.msg;srv/EndEffectorService_Response.msg;srv/SuctionCommand.srv;srv/SuctionCommand_Request.msg;srv/SuctionCommand_Response.msg;srv/CartService.srv;srv/CartService_Request.msg;srv/CartService_Response.msg")

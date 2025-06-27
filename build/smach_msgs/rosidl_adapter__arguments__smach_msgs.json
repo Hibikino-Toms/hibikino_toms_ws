@@ -1,0 +1,8 @@
+{
+  "package_name": "smach_msgs",
+  "non_idl_tuples": [
+    "/home/ylab/hibikino_toms_ws/src/executive_smach/smach_msgs:msg/SmachContainerInitialStatusCmd.msg",
+    "/home/ylab/hibikino_toms_ws/src/executive_smach/smach_msgs:msg/SmachContainerStructure.msg",
+    "/home/ylab/hibikino_toms_ws/src/executive_smach/smach_msgs:msg/SmachContainerStatus.msg"
+  ]
+}

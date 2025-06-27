@@ -1,0 +1,19 @@
+running develop
+running egg_info
+writing harvest_task_pkg.egg-info/PKG-INFO
+writing dependency_links to harvest_task_pkg.egg-info/dependency_links.txt
+writing entry points to harvest_task_pkg.egg-info/entry_points.txt
+writing requirements to harvest_task_pkg.egg-info/requires.txt
+writing top-level names to harvest_task_pkg.egg-info/top_level.txt
+reading manifest file 'harvest_task_pkg.egg-info/SOURCES.txt'
+writing manifest file 'harvest_task_pkg.egg-info/SOURCES.txt'
+running build_ext
+Creating /home/ylab/hibikino_toms_ws/install/harvest_task_pkg/lib/python3.10/site-packages/harvest-task-pkg.egg-link (link to .)
+Installing analyze_to_harvest_client script to /home/ylab/hibikino_toms_ws/install/harvest_task_pkg/lib/harvest_task_pkg
+Installing demo script to /home/ylab/hibikino_toms_ws/install/harvest_task_pkg/lib/harvest_task_pkg
+Installing harvest_state_machine script to /home/ylab/hibikino_toms_ws/install/harvest_task_pkg/lib/harvest_task_pkg
+Installing harvest_state_machine_test script to /home/ylab/hibikino_toms_ws/install/harvest_task_pkg/lib/harvest_task_pkg
+Installing harvest_task_cart_state script to /home/ylab/hibikino_toms_ws/install/harvest_task_pkg/lib/harvest_task_pkg
+
+Installed /home/ylab/hibikino_toms_ws/build/harvest_task_pkg
+running symlink_data

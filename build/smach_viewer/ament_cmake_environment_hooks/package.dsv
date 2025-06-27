@@ -1,0 +1,4 @@
+source;share/smach_viewer/local_setup.bash
+source;share/smach_viewer/local_setup.dsv
+source;share/smach_viewer/local_setup.sh
+source;share/smach_viewer/local_setup.zsh
