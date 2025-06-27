@@ -1,0 +1,219 @@
+# 走行タイプ（レールorクローラ）
+CART_TYPE: "crawler"
+# CART_TYPE: "rail"
+
+# ずんだもんの声
+ZUNDA_VOICE: true
+# デバッグフラグ
+DEBUG: false
+# 実験や検証をしたいときのフラグ（基本はFalse）
+EXPERIMENT_MODE: false
+
+# クローラ制御
+crawler_params:
+    # picoWのシリアルナンバー
+    CRAWLER_PICO_SERIAL_NUMBER: "E6613008E3277436" # 実機と違うので変更する
+    # CRAWLER_PICO_SERIAL_NUMBER: "142383138343513120F1" # デバッグ用。適当なやつ
+    BAUDRATE: 9600
+    
+    # 各パラメータ
+    INIT_DIR: 'forward'
+    DEFAULT_DISTANCE_MOVEMENT: 100 # タクト動作一回あたりの移動距離[mm] ←ーーーーー変更箇所
+    # DEFAULT_PULSE_MOVEMENT: 1000 # ↑のときのパルス数
+    DISTANCE_LIMIT_UPPER: 250  # 最大移動距離[mm]（＝ロボット動作範囲の長さ） ←ーーーーー変更箇所
+    # PULSE_LIMIT_UPPER: 10000  ↑のときの総パルス数 ※パルスの計算式：(最大距離[mm] * )/()
+    PULSE_LIMIT_LOWER: 0      # 移動パルス量の下限
+    DEFAULT_PWM: 63  # PWMの規定値
+    TOTAL_PULSE: 0   # 累積エンコーダカウントを0に初期化
+
+# レール制御
+rail_params:
+    # picoWのシリアルナンバー
+    RAIL_PICO_SERIAL_NUMBER: "E66130100F9F7B2E" # 実機
+    # RAIL_PICO_SERIAL_NUMBER: "142383138343513120F1" # 1デバッグ用。適当なやつ
+    BAUDRATE: 9600
+    
+    # 各パラメータ
+    INIT_DIR: 'forward'
+    DEFAULT_DISTANCE_MOVEMENT: 100 # タクト動作一回あたりの移動距離[mm] ←ーーーーー変更箇所
+    # DEFAULT_PULSE_MOVEMENT: 144 # ↑のときのパルス数
+    DISTANCE_LIMIT_UPPER: 3500  # 最大移動距離[mm]（＝レールの長さ） ←ーーーーー変更箇所
+    # PULSE_LIMIT_UPPER: 576  # ↑のときの総パルス数 ※パルスの計算式：(最大距離[mm] * 450)/(50 * 3.14)
+    PULSE_LIMIT_LOWER: 0  # 移動パルス量の下限
+    DEFAULT_PWM: 60  # PWMの規定値
+    TOTAL_PULSE: 0   # 累積エンコーダカウントを0に初期化
+
+# Z軸のパラメータ
+ZAxis_params:
+    # picoWのシリアルナンバー
+    Z_PICO_SERIAL_NUMBER: "E66130100F621022"
+    BAUDRATE: 115200
+
+    # 俯瞰カメラの取り付け高さ(ロボットフレーム上面から)
+    BACK_CAM_HEIGHT: 340 # 丸フレームで設置しているとき（小川のテクニカルチャレンジデバッグ時使用）(レールあり：310、レールなし：340)
+
+arm_params:
+    HOME_ANGLE_IN_ARM: [5, 170, -85]
+    INIT_X: 0.4008936242091224
+    INIT_Y: 179.014902404639
+    INIT_ANG: 90.0
+    
+    OFFSET_X: 40 # EEの位置制御時、x軸方向に-50mmくらいの誤差あり
+
+# アームモータ（Dynamixelモータ）
+dxl_params: 
+    DXL_HOME_ANGLE: [95 ,260, 95] 
+    # DXL_HOME_ANGLE: [146.84 ,255.86, 47.3] # デバッグ用にホームポジションを変えるときはこっち使ってくれ
+    DXL_BOX_ANGLE: [152, 258, 221]
+    # DXL_BOX_ANGLE: [145, 250, 230] # デバッグ用
+    MAX_ANGLE:  360.0
+    ENCODER_MAX_VALUE: 4095
+    
+    # U2D2のシリアルナンバー
+    U2D2_SERIAL_NUMBER: "FT94VZIA"
+    
+    # Dynamixelの諸設定用のパラメータ
+    BAUDRATE: 4000000
+    PROTOCOL_VERSION: 2.0
+    DXL_IDs: [1,2,3,4,5]
+    ADDR_TORQUE_ENABLE: 64
+    ADDR_LED_RED: 65
+    LEN_LED_RED: 1
+    ADDR_GOAL_POSITION: 116
+    LEN_GOAL_POSITION: 4
+    ADDR_PRESENT_POSITION: 132
+    LEN_PRESENT_POSITION: 4
+    DXL_MIN_POSITION_VALUE: 0
+    DXL_MAX_POSITION_VALUE: 4095
+    
+    # モータの加速・減速の滑らかさの設定
+    ADDR_PROFILE_ACCEL: 108
+    ADDR_PROFILE_VELO: 112
+    # 設定のための値
+    # PROFILE_ACCELS: [15,15,10,10,15]
+    PROFILE_ACCELS: [7,7,7,7,7]
+    # profile_veloes: [30,30,100,100,30]
+    PROFILE_VELOES: []
+    
+    # 各DXLモータの角度制限→※必ずDynamixel Wizardで値を確認して編集すること
+    # DXL1
+    DXL_1_MIN_POSI: 909 # 80[deg]
+    DXL_1_MIN_DEG: 80
+    DXL_1_MAX_POSI: 3074 # 270[deg]
+    DXL_1_MAX_DEG: 270
+    # DXL2
+    DXL_2_MIN_POSI: 1022 # 90[deg]
+    DXL_2_MIN_DEG: 90
+    DXL_2_MAX_POSI: 3187 # 280[deg]
+    DXL_2_MAX_DEG: 280
+    # DXL3
+    DXL_3_MIN_POSI: 681 # 60[deg]
+    DXL_3_MIN_DEG: 60
+    DXL_3_MAX_POSI: 3017 # 265[deg]
+    DXL_3_MAX_DEG: 265
+    # DXL4
+    DXL_4_MIN_POSI: 1079 # 95[deg]
+    DXL_4_MIN_DEG: 95
+    DXL_4_MAX_POSI: 3415 # 300[deg]
+    DXL_4_MAX_DEG: 300
+    # DXL5
+    DXL_5_MIN_POSI: 169 # 15[deg]
+    DXL_5_MIN_DEG: 15
+    DXL_5_MAX_POSI: 3586 # 315[deg]
+    DXL_5_MAX_DEG: 315
+    
+    TORQUE_ENABLE: 1
+    TORQUE_DISABLE: 0
+    DXL_MOVING_STATUS_TH: 10
+    TIMEOUT_TH: 5
+
+# エンドエフェクタ制御
+EE_params:
+    # picoWのシリアルナンバー
+    EE_PICO_SERIAL_NUMBER: "E66130100F63232E"
+    # 各パラメータ
+    BAUDRATE: 115200
+    FOTO_VAL: 950 # デフォルト：1000くらい(感度指標: 値= 大きい↔小さい…感度= 高くなる↔低くなる)
+    EDF_VAL: 2500 # デバッグ用(音控えめ)：1050くらい／デフォルト：1400~2000
+
+# カメラ座標系→EE座標系、EE座標系→アーム座標系への座標変換
+coordinate_transform_params:
+    # カメラからEE中心の距離…ロボット座標系（トマトに向かう方向がY）※z方向…マウント設置面からEE中心まで：41mm
+    # 135°マウント
+    # X_DIFF_CAM2EE: 0
+    # Y_DIFF_CAM2EE: 15.23
+    # Z_DIFF_CAM2EE: 89.248
+    # CAM_ANGLE: 35 # カメラの傾き（※地面に対して鉛直上向きを0°としたとき）
+    
+    # 0°マウント
+    X_DIFF_CAM2EE: 0
+    Y_DIFF_CAM2EE: -7
+    Z_DIFF_CAM2EE: 110 # マウント高さ：80 エンドエフェクタ高さパラメータ
+    CAM_ANGLE: 0
+    
+    # EE中心からアーム付け根までの距離 ※アームがホームポジションのときの距離
+    # X_DIFF_EE2ARM: 0
+    # Y_DIFF_EE2ARM: 162.5
+    # Z_DIFF_EE2ARM: 110
+    
+    # カメラ取り付け部の変更時
+    # X_DIFF_CAM2EE: 0
+    # Y_DIFF_CAM2EE: 22
+    # Z_DIFF_CAM2EE: 111
+    # CAM_ANGLE: 0
+    
+    # EE中心からアーム付け根までの距離 ※アームがホームポジションのときの距離
+    # X_DIFF_EE2ARM: 5.381867114667903
+    # Y_DIFF_EE2ARM: 194.4506811183773
+    # Z_DIFF_EE2ARM: 0
+    X_DIFF_EE2ARM: 0 # デバッグ用
+    Y_DIFF_EE2ARM: 185 # デバッグ用
+    Z_DIFF_EE2ARM: 0 # デバッグ用
+
+# 画像処理関連
+vision_params:
+    SHOW_RESULT: true
+    IMG_SAVE_DIR_PATH: "/home/ylab/hibikino_toms_ws/src/vision_pkg/vision_pkg/result/img"
+    PROC_RESULT_SAVE_DIR_PATH: "/home/ylab/hibikino_toms_ws/src/vision_pkg/vision_pkg/result/proc_result"
+    FILITER_TYPE: "non_filter"        # Retinexフィルタの種類（初期設定：フィルターなし）
+    RIPENESS_TH_PATH: "/home/ylab/hibikino_toms_ws/src/vision_pkg/vision_pkg/modules/ripeness_th.txt"
+    
+    # カメラパラメータ
+    camera_params:
+        WIDTH: 640
+        HEIGHT: 480
+        FPS: 30
+    
+    # 推論パラメータ
+    MODEL_INPUT_SIZE: 640
+    WEIGHT_PATH: "/home/ylab/hibikino_toms_ws/module/weights/base.pt"     # 使用するモデルの重みのパス
+    # WEIGHT_PATH:  "/home/ylab/hibikino_toms_ws/module/weights/best_Add_data.pt"     # 使用するモデルの重みのパス
+    # WEIGHT_PATH:  "/home/ylab/hibikino_toms_ws/module/weights/base.engine"     # TensorRT(Jetson向けのフォオーマット)モデル
+    CONF_BASE_TH: 0.1
+    IOU_TH: 0.2
+    MIN_AREA_TH: 1100
+    
+    # 画像処理のパラメータ
+    APPROACH_ANG: 45 # EEの進入角度が正面以外の基準面からの角度（トマトが並ぶ方向の平面を基準面0°としたときの角度→正面は90°）
+    
+    # 処理に利用するための信頼度のしきい値
+    CONF_MAIN_STEM_TH: 0.5 # 主茎
+    CONF_PED_TH: 0.1 # 果梗
+    CONF_TOM_TH: 0.5 # トマト(0.8)
+
+# 逆運動学関連
+ik_solver_params:
+    # 各リンクの長さ (mm)
+    # Link1: 275
+    # Link2: 61.75
+    # Link3: 275
+    # Link4: 85
+    Link1: 270 # デバッグ用
+    Link2: 61.75 # デバッグ用
+    Link3: 275 # デバッグ用
+    Link4: 75 # デバッグ用
+    MAX_LOOP_NUM: 500
+    GOAL_DIS: 0.01
+    GOAL_ANG: 0.05
+    P_DELTA_PARAM: 0.1
+    A_DELTA_PARAM: 0.5 # degree

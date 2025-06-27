@@ -1,7 +1,15 @@
 # すべてのファイルを無視
 *
+
 # srcディレクトリの無視を解除(srcディレクトリとその中のファイルを追跡対象とする)
 !src/
 !src/**
+
+# moduleディレクトリの無視を解除
+# ただし、module/weightsディレクトリは無視する
+!module/
+!module/**
+module/weights/
+
 # .gitignore自体も追跡対象とする
 !.gitignore
