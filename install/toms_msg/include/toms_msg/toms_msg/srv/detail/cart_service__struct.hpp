@@ -1,1 +1,0 @@
-/home/ylab/hibikino_toms_ws/build/toms_msg/rosidl_generator_cpp/toms_msg/srv/detail/cart_service__struct.hpp

@@ -1,27 +1,14 @@
-# すべてのファイルを無視
-*
+# buildディレクトリを無視
+build/
+build/**
 
-# buildディレクトリの無視を解除
-!build/
-!build/**
+# intallディレクトリを無視
+install/
+install/**
 
-# intallディレクトリの無視を解除
-!install/
-!install/**
+# logディレクトリを無視
+log/
+log/**
 
-# logディレクトリの無視を解除
-!log/
-!log/**
-
-# srcディレクトリの無視を解除(srcディレクトリとその中のファイルを追跡対象とする)
-!src/
-!src/**
-
-# moduleディレクトリの無視を解除
-# ただし、module/weightsディレクトリは無視する
-!module/
-!module/**
+# module/weightsディレクトリを無視
 module/weights/
-
-# .gitignore自体も追跡対象とする
-!.gitignore

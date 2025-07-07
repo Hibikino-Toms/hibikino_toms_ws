@@ -1,3 +1,0 @@
-[console_scripts]
-smach_node = behavior_planner.smach_node:main
-

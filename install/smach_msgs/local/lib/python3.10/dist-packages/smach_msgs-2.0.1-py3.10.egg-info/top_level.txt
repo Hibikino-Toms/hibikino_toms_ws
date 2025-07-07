@@ -1,1 +1,0 @@
-/home/ylab/hibikino_toms_ws/build/smach_msgs/ament_cmake_python/smach_msgs/smach_msgs.egg-info/top_level.txt

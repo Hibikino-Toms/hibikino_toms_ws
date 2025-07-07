@@ -1,1 +1,0 @@
-/home/ylab/hibikino_toms_ws/build/toms_msg/rosidl_typesupport_introspection_c/toms_msg/srv/detail/end_effector_service__rosidl_typesupport_introspection_c.h

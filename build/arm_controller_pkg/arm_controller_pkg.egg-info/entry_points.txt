@@ -1,7 +1,0 @@
-[console_scripts]
-arm_client_node = arm_controller_pkg.arm_client_node:main
-arm_client_node_d435 = arm_controller_pkg.arm_client_node_d435:main
-arm_controller = arm_controller_pkg.arm_controller:main
-arm_controller_server_d435 = arm_controller_pkg.arm_controller_server_d435:main
-arm_smooth_controller = arm_controller_pkg.arm_smooth_controller:main
-

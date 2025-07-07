@@ -1,7 +1,0 @@
-setup.py
-smach_viewer/__init__.py
-smach_viewer/smach_viewer_gui.py
-smach_viewer.egg-info/PKG-INFO
-smach_viewer.egg-info/SOURCES.txt
-smach_viewer.egg-info/dependency_links.txt
-smach_viewer.egg-info/top_level.txt

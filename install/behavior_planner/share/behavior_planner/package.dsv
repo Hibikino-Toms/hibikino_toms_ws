@@ -1,9 +1,0 @@
-source;share/behavior_planner/hook/pythonpath.ps1
-source;share/behavior_planner/hook/pythonpath.dsv
-source;share/behavior_planner/hook/pythonpath.sh
-source;share/behavior_planner/hook/ament_prefix_path.ps1
-source;share/behavior_planner/hook/ament_prefix_path.dsv
-source;share/behavior_planner/hook/ament_prefix_path.sh
-source;../../build/behavior_planner/share/behavior_planner/hook/pythonpath_develop.ps1
-source;../../build/behavior_planner/share/behavior_planner/hook/pythonpath_develop.dsv
-source;../../build/behavior_planner/share/behavior_planner/hook/pythonpath_develop.sh

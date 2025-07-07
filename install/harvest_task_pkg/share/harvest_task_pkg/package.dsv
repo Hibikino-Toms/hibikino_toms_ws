@@ -1,9 +1,0 @@
-source;share/harvest_task_pkg/hook/pythonpath.ps1
-source;share/harvest_task_pkg/hook/pythonpath.dsv
-source;share/harvest_task_pkg/hook/pythonpath.sh
-source;share/harvest_task_pkg/hook/ament_prefix_path.ps1
-source;share/harvest_task_pkg/hook/ament_prefix_path.dsv
-source;share/harvest_task_pkg/hook/ament_prefix_path.sh
-source;../../build/harvest_task_pkg/share/harvest_task_pkg/hook/pythonpath_develop.ps1
-source;../../build/harvest_task_pkg/share/harvest_task_pkg/hook/pythonpath_develop.dsv
-source;../../build/harvest_task_pkg/share/harvest_task_pkg/hook/pythonpath_develop.sh

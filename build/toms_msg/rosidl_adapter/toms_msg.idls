@@ -1,9 +1,0 @@
-/home/ylab/hibikino_toms_ws/build/toms_msg/rosidl_adapter/toms_msg:msg/TomatoPos.idl
-/home/ylab/hibikino_toms_ws/build/toms_msg/rosidl_adapter/toms_msg:msg/TomatoData.idl
-/home/ylab/hibikino_toms_ws/build/toms_msg/rosidl_adapter/toms_msg:srv/VisionService.idl
-/home/ylab/hibikino_toms_ws/build/toms_msg/rosidl_adapter/toms_msg:srv/CrawlerService.idl
-/home/ylab/hibikino_toms_ws/build/toms_msg/rosidl_adapter/toms_msg:srv/RailService.idl
-/home/ylab/hibikino_toms_ws/build/toms_msg/rosidl_adapter/toms_msg:srv/ArmService.idl
-/home/ylab/hibikino_toms_ws/build/toms_msg/rosidl_adapter/toms_msg:srv/EndEffectorService.idl
-/home/ylab/hibikino_toms_ws/build/toms_msg/rosidl_adapter/toms_msg:srv/SuctionCommand.idl
-/home/ylab/hibikino_toms_ws/build/toms_msg/rosidl_adapter/toms_msg:srv/CartService.idl

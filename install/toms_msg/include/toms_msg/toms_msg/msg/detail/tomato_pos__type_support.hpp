@@ -1,1 +1,0 @@
-/home/ylab/hibikino_toms_ws/build/toms_msg/rosidl_generator_cpp/toms_msg/msg/detail/tomato_pos__type_support.hpp

@@ -1,6 +1,0 @@
-# request
-int16 move_value
-int16 pwm_value
----
-# response
-float32 move_result

@@ -1,1 +1,0 @@
-/home/ylab/hibikino_toms_ws/build/toms_msg/rosidl_cmake/srv/ArmService_Response.msg
