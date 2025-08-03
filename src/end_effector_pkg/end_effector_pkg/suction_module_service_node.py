@@ -1,3 +1,14 @@
+#
+# @file suction_module_service_node.py
+# @brief エンドエフェクタ（吸引・把持機構）制御用ROS2サービスノード
+#
+# @details
+# 本プログラムは、ロボットアーム先端のエンドエフェクタを制御するためのROS2サービスサーバーです。
+# "SuctionCommand"というサービスを通じて、外部ノードからのコマンド（ファンのON/OFF、顎の開閉）を受け付けます。
+# 受け取ったコマンドに基づき、シリアル通信を介して接続されたRaspberry Pi Picoを制御し、
+# 物理的なハードウェア（EDFファン、サーボモーター）を操作します。
+#
+
 import rclpy
 from rclpy.node import Node
 from toms_msg.srv import SuctionCommand
@@ -9,7 +20,21 @@ from playsound import playsound
 import yaml
 
 class SuctionModuleServiceNode(Node):
+    """
+    @class SuctionModuleServiceNode
+    @brief 吸引モジュール制御ノードのメインクラス
+    """
     def __init__(self):
+        """
+        @brief コンストラクタ。ノードの初期化、パラメータ読み込み、シリアル通信設定、ROS2サービスの作成を行う。
+        @param[in] self インスタンス自身
+        @param[out] なし
+        @details
+        - 'suction_module_service_node'という名前のノードを作成します。
+        - YAMLファイルからパラメータ（音声の有効/無効、エンドエフェクタのシリアル番号など）を読み込みます。
+        - 指定されたシリアル番号を持つデバイス（Raspberry Pi Pico）を検索し、シリアル通信を確立します。
+        - 'command'という名前でSuctionCommandのサービスサーバーを起動し、コールバック関数を登録します。
+        """
         super().__init__('suction_module_service_node')
         
         
@@ -37,7 +62,13 @@ class SuctionModuleServiceNode(Node):
 
 
     def select_device(self, serial_number):
-        """指定されたシリアル番号に対応するデバイス名を返す"""
+        """
+        @brief 指定されたシリアル番号に一致するシリアルポートのデバイス名を検索する。
+        @param[in] serial_number 検索対象のデバイスのシリアル番号
+        @param[out] str or None 見つかったデバイス名(e.g., '/dev/ttyACM0')、見つからない場合はNone
+        @details
+        PCに接続されている全てのシリアルポートをスキャンし、引数で与えられたシリアル番号を持つポートを探します。
+        """
         # 接続されているUSBデバイスのリストを取得
         ports = serial.tools.list_ports.comports()
 
@@ -50,7 +81,13 @@ class SuctionModuleServiceNode(Node):
     
     @staticmethod
     def load_yaml(file_path):
-        """YAMLファイルを読み込むヘルパー関数"""
+        """
+        @brief YAMLファイルを読み込む静的ヘルパー関数。
+        @param[in] file_path 読み込むYAMLファイルのパス
+        @param[out] dict YAMLファイルの内容を格納した辞書
+        @details
+        指定されたパスのYAMLファイルを安全に読み込み、Pythonの辞書オブジェクトとして返します。
+        """
         try:
             with open(file_path, "r") as file:
                 return yaml.safe_load(file)
@@ -60,6 +97,14 @@ class SuctionModuleServiceNode(Node):
             raise ValueError(f"YAMLファイルの解析エラー: {e}")
 
     def data2pico(self, send_data):
+        """
+        @brief Raspberry Pi Picoへデータをシリアル送信し、応答を受信する。
+        @param[in] send_data Picoへ送信するデータ文字列
+        @param[out] str Picoから受信した応答データの先頭部分（モード）
+        @details
+        データをPicoに送信後、Picoからの応答を1行受信します。
+        受信したデータは整形され、応答コマンドの種別を表す先頭部分が返されます。
+        """
         # Picoへデータを送信
         self.get_logger().info(f"Picoへデータを送信 ▶▶▶ {str.encode(send_data)}")
         self.end_effector_ser.write(str.encode(send_data))
@@ -81,6 +126,11 @@ class SuctionModuleServiceNode(Node):
 
     # EDF停止
     def disable_edf(self):
+        """
+        @brief EDF（ファン）を停止させるコマンドをPicoに送信する。
+        @param[in] self インスタンス自身
+        @param[out] str Picoからの応答データ
+        """
         send_data = str(0) +','+ str(self.FOTO_VAL) +','+ str(self.EDF_VAL) +'\n'
         result_data = self.data2pico(send_data)
         self.get_logger().info(result_data)
@@ -88,23 +138,48 @@ class SuctionModuleServiceNode(Node):
     
     # EDF起動
     def enable_edf(self):
+        """
+        @brief EDF（ファン）を起動させるコマンドをPicoに送信する。
+        @param[in] self インスタンス自身
+        @param[out] str Picoからの応答データ
+        """
         send_data = str(1) +','+ str(self.FOTO_VAL) +','+ str(self.EDF_VAL) +'\n'
         result_data = self.data2pico(send_data)
         return result_data
 
     # 下顎閉じる
     def close_finger(self):
+        """
+        @brief 下顎（フィンガー）を閉じるコマンドをPicoに送信する。
+        @param[in] self インスタンス自身
+        @param[out] str Picoからの応答データ
+        """
         send_data = str(2) +','+ str(self.FOTO_VAL) +','+ str(self.EDF_VAL) +'\n'
         result_data =  self.data2pico(send_data)
         return result_data
     
     # 下顎開く＋EDF起動
     def open_finger(self):
+        """
+        @brief 下顎（フィンガー）を開くコマンドをPicoに送信する。
+        @param[in] self インスタンス自身
+        @param[out] str Picoからの応答データ
+        """
         send_data = str(3) +','+ str(self.FOTO_VAL) +','+ str(self.EDF_VAL) +'\n'
         result_data =  self.data2pico(send_data)
         return result_data
 
     def callback(self, request, response):
+        """
+        @brief SuctionCommandサービスのコールバック関数。リクエストに応じて各機能を実行する。
+        @param[in] request クライアントからのリクエストデータ (SuctionCommand.Request)
+        @param[in] response サーバーからクライアントへのレスポンスデータ (SuctionCommand.Response)
+        @param[out] response 処理結果を格納したレスポンスデータ
+        @details
+        リクエストコマンド('0'～'3')に応じて、対応するメソッド（disable_edf, enable_edfなど）を呼び出します。
+        処理結果はPicoからの応答となり、response.answerに格納されてクライアントに返されます。
+        不正なコマンドの場合は'9'を返します。
+        """
         suction_request = request.command
         if (suction_request == '0'):
             self.get_logger().info('ファンを停止するのだ')
@@ -141,6 +216,16 @@ class SuctionModuleServiceNode(Node):
 
 
 def main():
+    """
+    @brief メイン関数。ROS2ノードの初期化と実行を行う。
+    @param なし
+    @param なし
+    @details
+    1. rclpyを初期化します。
+    2. SuctionModuleServiceNodeクラスのインスタンスを生成してノードを作成します。
+    3. rclpy.spin()でノードを起動し、サービスリクエストを待ち受けます。
+    4. プログラムが終了する際に、クリーンアップ処理を行い、ノードを破棄します。
+    """
     rclpy.init()
     node = SuctionModuleServiceNode()
     try:
@@ -152,4 +237,9 @@ def main():
 
 
 if __name__ == "__main__":
+    """
+    @brief スクリプトのエントリーポイント。
+    @details
+    このスクリプトが直接実行された場合にmain()関数を呼び出します。
+    """
     main()
