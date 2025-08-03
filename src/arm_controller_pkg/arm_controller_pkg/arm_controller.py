@@ -1,3 +1,18 @@
+#
+# @file arm_controller.py
+# @brief ロボットアーム制御用ROS2ノード
+# @author 吉永
+# @date 2025-02-18
+#
+# @details
+# 本プログラムは、トマト収穫ロボットのアーム部分を制御するためのROS2サービスサーバーです。
+# ArmServiceというサービスを通じて、外部ノードからの要求（例：目標座標への移動、初期化、収穫動作など）を受け付けます。
+# 要求に応じて、YAMLファイルから読み込んだパラメータに基づき、以下の処理を実行します。
+#   - 経路計画 (Route Planning)
+#   - 逆運動学 (Inverse Kinematics) の計算
+#   - DynamixelモーターおよびZ軸の制御
+#
+
 import rclpy  # ROS2のPythonモジュールをインポート
 from rclpy.node import Node 
 
@@ -41,7 +56,22 @@ harvest success decision
 
 
 class Arm_Controller(Node):  
+    """
+    @class Arm_Controller
+    @brief アーム制御ノードのメインクラス
+    """
     def __init__(self):
+        """
+        @brief コンストラクタ。ノードの初期化、サービスの作成、パラメータ読み込み、各種制御クラスのインスタンス化を行う。
+        @param[in] self インスタンス自身
+        @param[out] なし
+        @details
+        - rclpy.Nodeを継承し、'arm_controller'という名前のノードを作成します。
+        - 'arm_service'という名前でArmServiceのサービスサーバーを起動します。
+        - YAMLファイルからアームの制御に必要な全パラメータ（モーター、IK、Z軸など）を読み込みます。
+        - 読み込んだパラメータを用いて、モーターコントローラ、Z軸コントローラ、逆運動学ソルバー、経路プランナーなどのインスタンスを生成します。
+        - アームのホームポジション角度や初期座標などの定数を設定します。
+        """
         super().__init__('arm_controller')
         
         #service
@@ -103,7 +133,14 @@ class Arm_Controller(Node):
 
     @staticmethod
     def load_yaml(file_path):
-        """YAMLファイルを読み込むヘルパー関数"""
+        """
+        @brief YAMLファイルを読み込む静的ヘルパー関数。
+        @param[in] file_path 読み込むYAMLファイルのパス
+        @param[out] dict型 YAMLファイルの内容
+        @details
+        指定されたパスのYAMLファイルを安全に読み込み、Pythonの辞書オブジェクトとして返します。
+        ファイルが見つからない場合や、解析エラーが発生した場合は例外を送出します。
+        """
         try:
             with open(file_path, "r") as file:
                 return yaml.safe_load(file)
@@ -113,6 +150,17 @@ class Arm_Controller(Node):
             raise ValueError(f"YAMLファイルの解析エラー: {e}")
 
     def move_to_target(self,target):
+        """
+        @brief 指定されたターゲット位置までアームを移動させる。
+        @param[in] target ターゲット情報（x, y, z座標、アプローチ方向）を持つオブジェクト
+        @param[out] bool 処理の成否 (True: 成功, False: 失敗)
+        @details
+        1.  現在のアームの角度を読み取り、ホームポジションにあるか確認します。
+        2.  ホームポジションにあれば、経路プランナーを用いて目標位置までの経路を生成します。
+        3.  生成された経路上の各点について、逆運動学(IK)を解き、各モーターの目標角度を計算します。
+        4.  IK計算時に特異点や可動範囲外が検出された場合は、エラーとして処理を中断します。
+        5.  計算されたモーター角度リストに基づき、Z軸を指定の高さに動かした後、アームを目標位置まで動かします。
+        """
         self.error_num = 0
         target_x, target_y, target_z, alpha = target.x, target.y, target.z, target.approach_direction
         motor_angles_list = []
@@ -204,6 +252,15 @@ class Arm_Controller(Node):
                 return False
     
     def cutting(self, target):
+        """
+        @brief 収穫対象を「噛み切る」動作を実行する。
+        @param[in] target ターゲット情報（x, y, z座標、アプローチ方向）を持つオブジェクト
+        @param[out] bool 処理の成否 (True: 成功, False: 失敗)
+        @details
+        ターゲットの位置とアプローチ角度に基づき、噛み切り動作のためのアームの移動先座標を計算します。
+        逆運動学を用いてその座標へのモーター角度を算出し、アームを動かして噛み切り動作を実行します。
+        特異点や可動範囲外の場合はエラーを返します。
+        """
         target_x, target_y, target_z, alpha = target.x, target.y, target.z, target.approach_direction
         print(f"x, y, x, alpha: {target_x, target_y, target_z, alpha}")
         action_dis = 75
@@ -247,6 +304,16 @@ class Arm_Controller(Node):
         return True
 
     def debug_ik_result(self,theta1, theta2, theta3):
+        """
+        @brief 逆運動学の計算結果をデバッグ出力する。
+        @param[in] theta1 第1関節の角度
+        @param[in] theta2 第2関節の角度
+        @param[in] theta3 第3関節の角度
+        @param[out] なし
+        @details
+        入力された各関節の角度と、それらから計算される手先の姿勢角度(α)をコンソールにログ出力します。
+        デバッグ目的で使用します。
+        """
         self.get_logger().info("モータ角度") 
         self.get_logger().info("---------------------------")
         self.get_logger().info(f"θ1: {round((theta1))} degrees")
@@ -259,6 +326,19 @@ class Arm_Controller(Node):
         # self.get_logger().info(f"x : {round(x)} z : {round(z)}")
 
     def arm_host_server(self,request, response):
+        """
+        @brief ArmServiceのコールバック関数。クライアントからの要求を処理する。
+        @param[in] request クライアントからのリクエストデータ (ArmService.Request)
+        @param[in] response サーバーからクライアントへのレスポンスデータ (ArmService.Response)
+        @param[out] response 処理結果を格納したレスポンスデータ
+        @details
+        リクエストの 'task' フィールドに応じて、以下の処理を振り分けます。
+        - "init_arm": アームとZ軸を初期化する。
+        - "move_to_target": 指定されたターゲットへアームを移動させる。
+        - "move_to_box": 噛み切り動作の後、収穫物を箱に移動させる。
+        - "home": アームをホームポジションに戻し、Z軸を指定の高さに設定する。
+        各タスクの完了後、response.task_comp に成否 (True/False) を設定して返します。
+        """
         if request.task == "init_arm":
             self.arm_controller.init_pos()
             self.z_controller.init_pos()
@@ -310,6 +390,16 @@ class Arm_Controller(Node):
         return response
     
 def main():
+    """
+    @brief メイン関数。ROS2ノードの初期化と実行を行う。
+    @param なし
+    @param なし
+    @details
+    1. rclpyを初期化します。
+    2. Arm_Controllerクラスのインスタンスを生成してノードを作成します。
+    3. rclpy.spin()でノードを起動し、サービスリクエストやコールバックを待ち受けます。
+    4. KeyboardInterrupt (Ctrl+C) を受け取ると、クリーンアップ処理（シャットダウン、ノード破棄）を行い、プログラムを終了します。
+    """
     rclpy.init() 
     node=Arm_Controller() 
     try :
@@ -322,4 +412,9 @@ def main():
         node.destroy_node()
 
 if __name__ == '__main__':
+    """
+    @brief スクリプトのエントリーポイント。
+    @details
+    このスクリプトが直接実行された場合にmain()関数を呼び出します。
+    """
     main()
