@@ -25,6 +25,8 @@ setup(
         'arm_client_node = arm_controller_pkg.arm_client_node:main', 
         'arm_controller_server_d435 = arm_controller_pkg.arm_controller_server_d435:main', 
         'arm_client_node_d435 = arm_controller_pkg.arm_client_node_d435:main', 
+        'arm_controller_teleop = arm_controller_pkg.arm_controller_teleop:main',
+        'arm_controller_teleop_angle = arm_controller_pkg.arm_controller_teleop_angle:main',
         ],
     },
 )
