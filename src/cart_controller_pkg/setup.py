@@ -22,6 +22,7 @@ setup(
     'console_scripts': [
         'rail_service_node = cart_controller_pkg.rail_service_node:main',
         'rail_client_node = cart_controller_pkg.rail_client_node:main',
+        'rail_teleop = cart_controller_pkg.rail_teleop:main',
         'crawler_service_node = cart_controller_pkg.crawler_service_node:main',
         'crawler_client_node = cart_controller_pkg.crawler_client_node:main',
         ],
