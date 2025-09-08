@@ -23,6 +23,7 @@ setup(
             'suction_module_node = end_effector_pkg.suction_module_node:main',
             'suction_module_service_node = end_effector_pkg.suction_module_service_node:main',
             'suction_module_client_node = end_effector_pkg.suction_module_client_node:main',
+            'suction_module_teleop = end_effector_pkg.suction_module_teleop:main',
         ],
     },
 )

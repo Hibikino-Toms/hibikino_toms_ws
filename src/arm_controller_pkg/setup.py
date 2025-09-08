@@ -26,6 +26,10 @@ setup(
         'arm_controller_server_d435 = arm_controller_pkg.arm_controller_server_d435:main', 
         'arm_client_node_d435 = arm_controller_pkg.arm_client_node_d435:main', 
         'arm_controller_teleop = arm_controller_pkg.arm_controller_teleop:main',
+<<<<<<< Updated upstream
+=======
+        'arm_controller_teleop2 = arm_controller_pkg.arm_controller_teleop2:main',
+>>>>>>> Stashed changes
         'arm_controller_teleop_angle = arm_controller_pkg.arm_controller_teleop_angle:main',
         ],
     },
