@@ -1,3 +1,5 @@
+import os
+from glob import glob
 from setuptools import find_packages, setup
 
 package_name = 'cart_controller_pkg'
@@ -10,6 +12,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        (os.path.join('share', package_name, 'launch'), glob(os.path.join('launch', '*.launch.py'))),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -25,6 +28,7 @@ setup(
         'rail_teleop = cart_controller_pkg.rail_teleop:main',
         'crawler_service_node = cart_controller_pkg.crawler_service_node:main',
         'crawler_client_node = cart_controller_pkg.crawler_client_node:main',
+        'twist_to_crawler_converter = cart_controller_pkg.twist_to_crawler_converter_node:main',
         ],
     },
 )

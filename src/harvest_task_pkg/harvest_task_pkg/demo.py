@@ -120,7 +120,7 @@ def main(args=None):
             
             if vision_response is not None:
                 if vision_response.detect_check:
-                    print("トマトを見つけたよ")
+                    print("トマトを見つけたよ") 
                     if VOICE:
                         playsound("/home/ylab/hibikino_toms_ws/src/harvest_task_pkg/sound/トマトを見つけたのだ.wav")
                     logger.info(f"\nビジョンノードのレスポンス: {vision_response}")
