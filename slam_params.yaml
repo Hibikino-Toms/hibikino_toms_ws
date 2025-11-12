@@ -1,0 +1,19 @@
+slam_toolbox:
+  ros__parameters:
+    solver_plugin: "solver_plugins::CeresSolver"
+    ceres_linear_solver: "SPARSE_NORMAL_CHOLESKY"
+    ceres_preconditioner: "SCHUR_JACOBI"
+    ceres_trust_region_strategy: "LEVENBERG_MARQUARDT"
+    ceres_dogleg_type: "TRADITIONAL_DOGLEG"
+    ceres_loss_function: "None"
+
+    # TFとトピックの設定
+    odom_frame: "odom"
+    map_frame: "map"
+    base_frame: "base_link"
+    scan_topic: "/scan"
+
+    # その他設定
+    use_scan_matching: true
+    mode: "mapping" # "mapping" (地図作成) モード
+    map_update_interval: 1.0
