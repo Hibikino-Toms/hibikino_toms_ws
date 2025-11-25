@@ -48,7 +48,7 @@ class CrawlerControllerSerial(Node):
             self.baudrate = crawler_params['BAUDRATE']
             # --- YAMLパラメータの追加 ---
             self.pulses_per_meter = float(crawler_params.get('PULSES_PER_METER', 17400.0))
-            self.tread = float(crawler_params.get('TREAD', 0.20)) # クローラーの幅 (m)
+            self.tread = float(crawler_params.get('TREAD', 0.40)) # クローラーの幅 (m)
             # --------------------------
 
             self.get_logger().info(f" -> pulse/m: {self.pulses_per_meter}")
