@@ -1,119 +1,202 @@
+# coding: utf-8
+
 import rclpy
 from rclpy.node import Node
+from std_msgs.msg import Float32MultiArray
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import TransformStamped, Quaternion
 from tf2_ros import TransformBroadcaster
+import time
 import serial
-import math
+import serial.tools.list_ports
+import yaml
 import threading
+import math
 
-class TomatoOdomNode(Node):
+class CrawlerControllerSerial(Node):
+    """
+    /crawler_pwms トピックを購読し、PWM値をマイコンへ送信する。
+    同時に、マイコンからエンコーダ値を受信し、オドメトリを計算して /odom を発行する。
+    """
+    
+    # 定数: 1mあたりのカウント数 (0-17400 = 1m)
+    COUNTS_PER_METER = 17400.0
+
+    @staticmethod
+    def load_yaml(file_path):
+        """YAMLファイルを読み込むヘルパー関数"""
+        try:
+            with open(file_path, "r") as file:
+                return yaml.safe_load(file)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"YAMLファイルが見つかりません: {file_path}")
+        except yaml.YAMLError as e:
+            raise ValueError(f"YAMLファイルの解析エラー: {e}")
+
     def __init__(self):
-        super().__init__('tomato_odom_node')
+        super().__init__('crawler_controller_serial') 
+        self.get_logger().info('クローラー制御＆オドメトリノードを起動します。')
+        
+        self.serial_port = None
+        yaml_path = '/home/ylab/hibikino_toms_ws/module/set_params.yaml'
+        self.get_logger().info(f'YAMLパス: {yaml_path}')
+        
+        # --- パラメータ読み込み ---
+        try:
+            params = self.load_yaml(yaml_path)
+            crawler_params = params["crawler_params"]
+            self.serial_number = crawler_params['CRAWLER_PICO_SERIAL_NUMBER']
+            self.baudrate = crawler_params['BAUDRATE']
+            
+            # オドメトリ計算に必要なトレッド幅を追加で読み込み
+            # YAMLに "TREAD": 0.4 のように記述されている前提
+            self.tread_width = crawler_params.get('TREAD', 0.4) 
 
-        # --- 設定パラメータ (必要に応じて変更してください) ---
-        # シリアルポート: Jetsonに接続したデバイスパスを確認してください (ls /dev/tty*)
-        self.declare_parameter('serial_port', '/dev/ttyUSB0') 
-        # ボーレート: マイコン側のSerial.begin()の値と合わせる必要があります
-        self.declare_parameter('baud_rate', 115200)
-        # トレッド幅: 40cm = 0.4m と仮定
-        self.declare_parameter('tread_width', 0.40) 
+            self.get_logger().info(f" -> シリアル番号: {self.serial_number}")
+            self.get_logger().info(f" -> ボーレート: {self.baudrate}")
+            self.get_logger().info(f" -> トレッド幅: {self.tread_width} m")
 
-        self.serial_port = self.get_parameter('serial_port').get_parameter_value().string_value
-        self.baud_rate = self.get_parameter('baud_rate').get_parameter_value().integer_value
-        self.tread_width = self.get_parameter('tread_width').get_parameter_value().double_value
+        except (FileNotFoundError, KeyError, ValueError) as e:
+            self.get_logger().fatal(f"設定ファイルの読み込みに失敗しました: {e}")
+            self.initialized_successfully = False 
+            return
+        
+        self.initialized_successfully = True
 
-        # 定数: 1mあたりのカウント数 (0-17400 = 1m)
-        self.COUNTS_PER_METER = 17400.0
-
-        # --- 内部変数 ---
+        # --- オドメトリ用変数の初期化 ---
         self.x = 0.0
         self.y = 0.0
-        self.th = 0.0  # ロボットの向き (rad)
-        
+        self.th = 0.0
         self.prev_left_count = None
         self.prev_right_count = None
-        self.last_time = self.get_clock().now()
+        self.last_odom_time = self.get_clock().now()
 
-        # --- ROS 2 通信設定 ---
+        # --- ROS通信設定 ---
+        # 1. Subscriber (PWM送信)
+        self.subscription = self.create_subscription(
+            Float32MultiArray,
+            '/crawler_pwms',
+            self.pwm_callback, 
+            10)
+            
+        # 2. Publisher & TF (オドメトリ受信)
         self.odom_pub = self.create_publisher(Odometry, 'odom', 10)
         self.tf_broadcaster = TransformBroadcaster(self)
 
-        # --- シリアル通信接続 ---
-        try:
-            self.ser = serial.Serial(self.serial_port, self.baud_rate, timeout=1)
-            self.get_logger().info(f"Connected to serial: {self.serial_port} at {self.baud_rate}")
-        except serial.SerialException as e:
-            self.get_logger().error(f"Failed to connect to serial: {e}")
-            # 実運用ではここで終了するか、再接続ロジックを入れる
+        # 3. 安全停止タイマー
+        self.last_received_time = self.get_clock().now()
+        self.timeout_timer = self.create_timer(0.1, self.timeout_callback)
+
+        # --- シリアルポート接続と受信スレッド開始 ---
+        self.setup_serial()
+        
+        # シリアル接続が成功していたら受信スレッドを開始
+        if self.initialized_successfully and self.serial_port and self.serial_port.is_open:
+            self.read_thread = threading.Thread(target=self.read_serial_loop)
+            self.read_thread.daemon = True
+            self.read_thread.start()
+
+    def select_device(self, serial_number):
+        """指定されたシリアル番号に対応するデバイス名を返す"""
+        ports = serial.tools.list_ports.comports()
+        for port in ports:
+            if port.serial_number == serial_number:
+                self.get_logger().info(f'デバイスが見つかりました: {port.device}')
+                return port.device
+        self.get_logger().error(f"シリアル番号 '{serial_number}' を持つデバイスが見つかりませんでした。")
+        return None
+
+    def setup_serial(self):
+        """シリアルポートのセットアップを行う"""
+        if not self.initialized_successfully:
             return
 
-        # 受信ループを別スレッドで開始（メインスレッドをブロックしないため）
-        self.read_thread = threading.Thread(target=self.read_serial_loop)
-        self.read_thread.daemon = True
-        self.read_thread.start()
+        device_name = self.select_device(self.serial_number)
+        if device_name is None:
+            self.initialized_successfully = False
+            return
+        
+        try:
+            # timeoutは読み込みスレッドのために少し短めでも良いが、1.0でも動作はする
+            self.serial_port = serial.Serial(device_name, self.baudrate, timeout=1.0)
+            self.get_logger().info(f'{device_name} とのシリアル通信を開始しました。')
+        except serial.SerialException as e:
+            self.get_logger().fatal(f'シリアルポートを開けませんでした: {e}')
+            self.initialized_successfully = False
+
+    def pwm_callback(self, msg: Float32MultiArray):
+        """/crawler_pwms 受信コールバック"""
+        if not self.initialized_successfully or not self.serial_port or not self.serial_port.is_open:
+            return
+
+        self.last_received_time = self.get_clock().now()
+        pwm_left = msg.data[0]
+        pwm_right = msg.data[1]
+        self.send_command_to_mcu(pwm_left, pwm_right)
+
+    def send_command_to_mcu(self, pwm_left, pwm_right):
+        """マイコンへコマンド送信"""
+        if self.serial_port and self.serial_port.is_open:
+            # フォーマット: "PWM_L,PWM_R\n" (例: "80,-80\n")
+            command = f"{int(pwm_left)},{int(pwm_right)}\n"
+            try:
+                self.serial_port.write(command.encode('utf-8'))
+            except Exception as e:
+                self.get_logger().error(f"シリアル書き込みエラー: {e}")
 
     def read_serial_loop(self):
-        """シリアルデータを読み込み続けるループ"""
-        while rclpy.ok():
+        """
+        [別スレッド] マイコンからのデータを常時読み込むループ
+        想定受信フォーマット: "Encoder_L,Encoder_R" (例: "17400,-500")
+        """
+        while rclpy.ok() and self.serial_port and self.serial_port.is_open:
             try:
-                if self.ser.in_waiting > 0:
-                    # decodeエラーを無視して読み込む
-                    line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                if self.serial_port.in_waiting > 0:
+                    line = self.serial_port.readline().decode('utf-8', errors='ignore').strip()
                     if line:
-                        self.process_data(line)
+                        self.process_odom_data(line)
             except Exception as e:
-                self.get_logger().warn(f"Serial read error: {e}")
+                self.get_logger().warn(f"シリアル読み込みエラー: {e}")
+                time.sleep(0.1)
 
-    def process_data(self, line):
-        """
-        受信データ解析とオドメトリ計算
-        想定フォーマット: "LeftVal,RightVal" (例: "17400,-500")
-        """
+    def process_odom_data(self, line):
+        """受信データを解析してオドメトリを更新"""
         try:
             parts = line.split(',')
+            # カンマ区切りで要素数が2以外なら無視（PWMのエコーバックなどが混ざる可能性を考慮）
             if len(parts) != 2:
-                # データの数が合わない場合は無視（ノイズ対策）
                 return
             
-            # 順序が「左, 右」であると仮定しています
+            # 左, 右 の順で来ると仮定
             current_left_count = float(parts[0])
             current_right_count = float(parts[1])
 
-            # 初回受信時は前回値がないので初期化のみ
+            # 初回受信時は初期化のみ
             if self.prev_left_count is None:
                 self.prev_left_count = current_left_count
                 self.prev_right_count = current_right_count
-                self.last_time = self.get_clock().now()
+                self.last_odom_time = self.get_clock().now()
                 return
 
-            # --- オドメトリ計算 (Differential Drive) ---
+            # --- オドメトリ計算 ---
             current_time = self.get_clock().now()
-            dt = (current_time - self.last_time).nanoseconds / 1e9
-            
-            # dtが極端に小さい場合（バースト受信など）は計算スキップ
-            if dt < 0.0001:
-                return
+            dt = (current_time - self.last_odom_time).nanoseconds / 1e9
 
-            # 1. カウントの増分を計算
+            if dt < 0.0001: return
+
             delta_l_count = current_left_count - self.prev_left_count
             delta_r_count = current_right_count - self.prev_right_count
 
-            # 2. 距離に変換 (m)
+            # カウント -> メートル変換
             d_left = delta_l_count / self.COUNTS_PER_METER
             d_right = delta_r_count / self.COUNTS_PER_METER
 
-            # 3. 移動距離と回転角の計算
-            # 右車輪が多く進むと左に曲がる(反時計回り正)ため (R - L) / W
             d_center = (d_right + d_left) / 2.0
             delta_th = (d_right - d_left) / self.tread_width
 
-            # 4. 速度計算 (m/s, rad/s)
             vx = d_center / dt
             vth = delta_th / dt
 
-            # 5. 現在位置(x, y, th)の更新
-            # わずかな移動の場合は直線近似でOKだが、高精度にするならRunge-Kutta法などを使う
             if d_center != 0:
                 delta_x = d_center * math.cos(self.th + delta_th / 2.0)
                 delta_y = d_center * math.sin(self.th + delta_th / 2.0)
@@ -122,22 +205,22 @@ class TomatoOdomNode(Node):
             
             self.th += delta_th
 
-            # --- パブリッシュ処理 ---
+            # パブリッシュ
             self.publish_odom(current_time, vx, vth)
 
-            # 次回のために変数を更新
+            # 更新
             self.prev_left_count = current_left_count
             self.prev_right_count = current_right_count
-            self.last_time = current_time
+            self.last_odom_time = current_time
 
         except ValueError:
-            # 数値変換に失敗した場合（文字化けなど）は無視
-            pass 
+            pass
 
     def publish_odom(self, current_time, vx, vth):
+        """/odom と TF を発行"""
         q = self.euler_to_quaternion(0, 0, self.th)
 
-        # 1. TFの発行 (odom -> base_link)
+        # TF (odom -> base_link)
         t = TransformStamped()
         t.header.stamp = current_time.to_msg()
         t.header.frame_id = 'odom'
@@ -148,22 +231,16 @@ class TomatoOdomNode(Node):
         t.transform.rotation = q
         self.tf_broadcaster.sendTransform(t)
 
-        # 2. /odom トピックの発行
+        # Odom Msg
         odom = Odometry()
         odom.header.stamp = current_time.to_msg()
         odom.header.frame_id = 'odom'
         odom.child_frame_id = 'base_link'
-
-        # 位置
         odom.pose.pose.position.x = self.x
         odom.pose.pose.position.y = self.y
-        odom.pose.pose.position.z = 0.0
         odom.pose.pose.orientation = q
-
-        # 速度
         odom.twist.twist.linear.x = vx
         odom.twist.twist.angular.z = vth
-
         self.odom_pub.publish(odom)
 
     def euler_to_quaternion(self, roll, pitch, yaw):
@@ -173,11 +250,44 @@ class TomatoOdomNode(Node):
         qw = math.cos(roll/2) * math.cos(pitch/2) * math.cos(yaw/2) + math.sin(roll/2) * math.sin(pitch/2) * math.sin(yaw/2)
         return Quaternion(x=qx, y=qy, z=qz, w=qw)
 
+    def stop_motors(self):
+        """停止コマンド送信"""
+        if self.initialized_successfully and self.serial_port and self.serial_port.is_open:
+            self.send_command_to_mcu(0.0, 0.0)
+
+    def timeout_callback(self):
+        """タイムアウト監視"""
+        if not self.initialized_successfully:
+            return
+        duration = (self.get_clock().now() - self.last_received_time).nanoseconds / 1e9
+        if duration > 0.5:
+            self.stop_motors()
+
+    def destroy_node(self):
+        """終了処理"""
+        self.get_logger().info('クリーンアップ処理を実行します。')
+        if hasattr(self, 'initialized_successfully') and self.initialized_successfully:
+            self.stop_motors()
+            time.sleep(0.1)
+            if self.serial_port and self.serial_port.is_open:
+                self.serial_port.close()
+                self.get_logger().info("シリアルポートを閉じました。")
+        super().destroy_node()
+
 def main(args=None):
     rclpy.init(args=args)
-    node = TomatoOdomNode()
-    rclpy.spin(node)
-    node.destroy_node()
+    node = CrawlerControllerSerial()
+    if hasattr(node, 'initialized_successfully') and node.initialized_successfully:
+        try:
+            rclpy.spin(node)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            node.destroy_node()
+    else:
+        node.get_logger().fatal("初期化失敗により中断")
+        if hasattr(node, 'serial_port') and node.serial_port and node.serial_port.is_open:
+            node.serial_port.close()
     rclpy.shutdown()
 
 if __name__ == '__main__':
