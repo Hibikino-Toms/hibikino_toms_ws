@@ -30,3 +30,18 @@ SLAMのlaunchファイルを起動した瞬間のマッピングはできるが�
 しかし、yamlをうまく読み込めていないのかyamlファイルのパラメータを反映できていない
 パスが通っていることは確認できており、そのほかの原因がわからない
 クリーンビルドし、再ビルドしたが解消されず
+
+### エラー（warning）について ###
+```
+[async_slam_toolbox_node-2] [WARN] [1764240601.646584977] [slam_toolbox]: minimum laser range setting (0.0 m) exceeds the capabilities of the used Lidar (0.3 m)
+[async_slam_toolbox_node-2] [WARN] [1764240601.646960394] [slam_toolbox]: maximum laser range setting (25.0 m) exceeds the capabilities of the used Lidar (20.0 m)
+```
+このエラーは、使用するLiDARの許容が0.3-20.0だが、設定が0.0-25.0になっていることによるもの
+おそらくデフォルトが0.0-25.0であるため、0.3-20.0に変更する必要がある
+これはyamlファイルで設定するため、yamlファイルがうまく反映されない現状では解決できていない
+
+```
+[async_slam_toolbox_node-2] [INFO] [1764242135.022236358] [slam_toolbox]: Message Filter dropping message: frame 'livox_frame' at time 1764242134.814 for reason 'discarding message because the queue is full'
+```
+このエラーは、LiDARとTFが時間的にずれており、センサ情報を捨てていることによるもの
+時間の許容値を設定しているyamlファイルが反映されていない現状では、解決が難しい
