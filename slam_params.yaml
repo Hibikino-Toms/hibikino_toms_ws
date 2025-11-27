@@ -6,6 +6,10 @@ slam_toolbox:
     ceres_trust_region_strategy: "LEVENBERG_MARQUARDT"
     ceres_dogleg_type: "TRADITIONAL_DOGLEG"
     ceres_loss_function: "None"
+    transform_timeout: 1.0
+    tf_buffer_duration: 30.0
+    minimum_laser_range: 0.3
+    maximum_laser_range: 20.0
 
     # TFとトピックの設定
     odom_frame: "odom"
