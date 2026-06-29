@@ -1,6 +1,7 @@
 # Hibikino-Toms/hibikino_toms_wsにプログラムの変更を反映する場合 #
 ワークスペース内（hibikino_toms_ws）でコードを変更した際、以下の３つのコマンドを実行するだけでgithubに更新を反映できる。
 ```
+cd ~/hibikino_toms_ws/
 git add .
 git commit -m "変更内容のメモ"
 git push origin main
