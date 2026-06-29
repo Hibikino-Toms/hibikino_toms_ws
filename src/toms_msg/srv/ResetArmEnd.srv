@@ -1,0 +1,5 @@
+# ResetArmEnd.srv
+# Request
+---
+bool success
+string message

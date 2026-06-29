@@ -1,0 +1,16 @@
+vision_d435_param:
+    SHOW_RESULT: true
+    IMG_SAVE_DIR_PATH: "/home/ylab/hibikino_toms_ws/src/vision_pkg/vision_pkg/img"
+    FILITER_TYPE: "non_filter"        # Retinexフィルタの種類（初期設定：フィルターなし）
+    RIPENESS_TH_PATH: "/home/ylab/hibikino_toms_ws/src/vision_pkg/vision_pkg/modules/ripeness_th.txt"
+    
+    # 推論パラメータ
+    WEIGHT_PATH:  "/home/ylab/hibikino_toms_ws/module/weights/best.pt"     # 使用するモデルの重みのパス
+    CONF_BASE_TH: 0.1
+    IOU_TH: 0.1
+    MIN_AREA_TH: 1100
+
+    # 処理に利用するための信頼度のしきい値
+    CONF_MAIN_STEM_TH: 0.6 # 主茎
+    CONF_PED_TH: 0.1 # 果梗
+    CONF_TOM_TH: 0.1 # トマト

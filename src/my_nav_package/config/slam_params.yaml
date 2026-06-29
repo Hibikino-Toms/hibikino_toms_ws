@@ -1,0 +1,25 @@
+slam_toolbox:
+  ros__parameters:
+    solver_plugin: "solver_plugins::CeresSolver"
+    ceres_linear_solver: "SPARSE_NORMAL_CHOLESKY"
+    ceres_preconditioner: "SCHUR_JACOBI"
+    ceres_trust_region_strategy: "LEVENBERG_MARQUARDT"
+    ceres_dogleg_type: "TRADITIONAL_DOGLEG"
+    ceres_loss_function: "None"
+    transform_timeout: 1.0
+    tf_buffer_duration: 30.0
+    minimum_laser_range: 0.8
+    maximum_laser_range: 20.0
+    minimum_travel_distance: 0.05
+    minimum_travel_heading: 0.01
+
+    # TFとトピックの設定
+    odom_frame: "odom" #odom
+    map_frame: "map"
+    base_frame: "base_link" #base_link
+    scan_topic: "/scan"
+
+    # その他設定
+    use_scan_matching: true
+    mode: "mapping" # "mapping" (地図作成) モード
+    map_update_interval: 1.0
