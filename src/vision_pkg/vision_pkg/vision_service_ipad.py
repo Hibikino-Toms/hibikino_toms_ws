@@ -324,9 +324,10 @@ class Vision_Service(Node):
         # self.realsense.setup("230322272057") # 手先カメラ
         self.ensure_realsense("230322272057")
         color_img,depth_img,depth_frame = self.realsense.get_image(self.SHOW_RESULT_FLAG)
-        self.save_image(color_img, "orig_img")
+        
 
         if color_img is not None :
+            self.save_image(color_img, "orig_img")
             # Rerinexフィルタ処理
             # TODO: Retinexフィルターのパラメータ設定
             if self.FILITER_TYPE == "non_filter":
@@ -462,3 +463,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
