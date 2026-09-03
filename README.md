@@ -105,7 +105,7 @@ ros2 launch my_nav_package slam.launch.py
 ```
 クローラをteleopで移動させると、地図が生成され、以下のコマンドで保存（pgmとyamlが指定のパスに保存される）
 ```
-ros2 run nav2_map_server map_saver_cli -f 保存先のパス
+ros2 run nav2_map_server map_saver_cli -f ~/hibikino_toms_ws/src/my_nav_package/maps/maps
 ```
 地図保存後は、slamのlaunchは停止して良い
 ## 保存した地図を用いてNavigationで自律移動 ##
@@ -120,6 +120,10 @@ ros2 launch livox_ros_driver2 rviz_MID360_launch.py
 harvest launchを起動
 ```
 ros2 launch harvest_task_pkg crawler_auto_harvest.launch.py
+```
+cmd_velの制御ノード起動
+```
+ros2 run crawler_robot_pkg crawler_control_vel 
 ```
 以下のコマンドでNavigationを起動すると、rvizが起動してslamで保存したマップが出力される（マップのパスは/home/ylab/hibikino_toms_ws/src/my_nav_package/maps/maps.yamlで指定している）
 ```
