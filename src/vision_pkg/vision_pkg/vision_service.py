@@ -7,6 +7,7 @@ from datetime import datetime
 import yaml
 import traceback  # ★ 追加
 import time
+import statistics
 
 # ros2_library
 import rclpy
@@ -23,10 +24,8 @@ import json
 import csv
 import copy
 
-from ultralytics import YOLO
-
 sys.path.append('/home/ylab/hibikino_toms_ws/src/vision_pkg/vision_pkg/modules')
-from .modules.realsense_module import Realsense_Module
+from .modules.realsense_module_rev1 import Realsense_Module
 from .modules.ripeness_judge import Ripeness_Judge
 from .modules.filter_tools import Filter_SSR, Filter_MSR, Filter_MSRCR
 from .modules.harvest_order import Harvest_Order
@@ -44,11 +43,29 @@ vision service node
 TODO: Retinexフィルターの種類選択とパラメータ設定処理
 TODO: yolo_toolsの実装 →YOLOの設定ファイル。動作開始直後の初回の認識時間を短縮できる。
 TODO: 2段階収穫動作の処理実装
+
+2026/09/01
+処理の高速化
+・サービス要求ごとにカメラを初期化せず、すでに起動しているカメラを使う場合は再利用するように変更（手先・俯瞰の切り替え時のみ初期化）
+・ノード起動時にカメラ画像で推論してYOLOのウォームアップを行い、初回の認識時間を短縮
 """
 
 class Vision_Service(Node):  
     def __init__(self):
         super().__init__('vision_service') 
+
+        # ros2パラメータ
+        self.declare_parameter('overview_camera', '827312071693')
+        self.declare_parameter('hand_camera', '230322272057')
+        self.overview_camera = self.get_parameter('overview_camera').value
+        self.hand_camera = self.get_parameter('hand_camera').value
+        self.current_camera = None
+        self.benchmark_samples = {
+            'camera_setup': [],
+            'camera_capture': [],
+            'object_detection': [],
+            'service_total': [],
+        }
 
         #service
         self.vision_host_server_object = self.create_service(
@@ -73,7 +90,8 @@ class Vision_Service(Node):
             vision_params = params["vision_params"]
             camera_params = vision_params["camera_params"]
             
-            self.SHOW_RESULT_FLAG = vision_params["SHOW_RESULT"]
+            # self.SHOW_RESULT_FLAG = vision_params["SHOW_RESULT"]
+            self.SHOW_RESULT_FLAG = False   # 画像表示で1秒待つことになるのでFalseにする
             self.FILITER_TYPE = vision_params["FILITER_TYPE"]
             
             # 推論パラメータ
@@ -92,11 +110,21 @@ class Vision_Service(Node):
             self.APPROACH_ANG = vision_params["APPROACH_ANG"]
 
             #library
-            self.realsense = Realsense_Module(camera_params)
+            component_init_start = time.perf_counter()
+            self.realsense = Realsense_Module(camera_params, self.overview_camera)   # 俯瞰カメラを起動
+            self.current_camera = self.overview_camera
             self.harvest_order = Harvest_Order(vision_params)
             self.ripeness_judge = Ripeness_Judge(vision_params)
             self.predict_extra = Predict_Extra(vision_params)
             self.angle_determiner = Approach_Angle_Determiner(camera_params)
+
+            # 実際のカメラ画像でYOLOをウォームアップする
+            for _ in range(3):
+                test_img, _, _ = self.realsense.get_image(False)
+                if test_img is not None:
+                    self.predict_extra.run_predict(test_img, conf=self.CONF_BASE_TH, iou=self.IOU_TH)
+
+            self.get_logger().info(f'[BENCH] component_init elapsed={time.perf_counter() - component_init_start:.6f}s')
             self.get_logger().info('ビジョンサーバ起動')
 
         except Exception as e:
@@ -177,7 +205,7 @@ class Vision_Service(Node):
                     writer.writerows(empty_data)  # 空でない場合はデータを記録
                 # print(f"データをCSVとして保存しました: {file_path}")
         except Exception as e:
-             self.get_logger().warn(f"CSV保存失敗: {e}")
+            self.get_logger().warn(f"CSV保存失敗: {e}")
         return file_path
     
     def flatten_json(self, nested_json):
@@ -194,9 +222,40 @@ class Vision_Service(Node):
         flatten(nested_json)
         return flat_dict
 
+    def record_benchmark(self, name, elapsed, detail=''):
+        """処理時間を記録し、現在までの統計をログへ出力する"""
+        self.benchmark_samples[name].append(elapsed)
+        samples = self.benchmark_samples[name]
+        detail_text = f' {detail}' if detail else ''
+        self.get_logger().info(
+            f'[BENCH] {name} elapsed={elapsed:.6f}s '
+            f'count={len(samples)} mean={statistics.fmean(samples):.6f}s '
+            f'median={statistics.median(samples):.6f}s '
+            f'max={max(samples):.6f}s{detail_text}')
+
+    def ensure_camera(self, serial_number):
+        """同じカメラは再利用し、別カメラへの切替時だけ初期化する"""
+        if self.current_camera == serial_number:
+            self.record_benchmark('camera_setup', 0.0, f'serial={serial_number} skipped=true')
+            return
+
+        setup_start = time.perf_counter()
+        self.realsense.setup(serial_number)
+        setup_elapsed = time.perf_counter() - setup_start
+        self.current_camera = serial_number
+        self.record_benchmark('camera_setup', setup_elapsed, f'serial={serial_number} skipped=false')
+
+    def get_measured_image(self):
+        """画像を取得し、その所要時間を記録する"""
+        capture_start = time.perf_counter()
+        result = self.realsense.get_image(self.SHOW_RESULT_FLAG)
+        capture_elapsed = time.perf_counter() - capture_start
+        self.record_benchmark('camera_capture', capture_elapsed, f'serial={self.current_camera}')
+        return result
+
     def detect_check(self, F_or_B):
         try:
-            self.realsense.setup("827312071693") # D435(俯瞰カメラ)のID: realsense-viewerで確認
+            self.ensure_camera(self.overview_camera)
             
             self.get_logger().info("detect_check")
             check = None
@@ -205,10 +264,13 @@ class Vision_Service(Node):
             tom_pos_msg = TomatoPos() # 初期化
 
             # 俯瞰カメラによる撮影で画像を取得する
-            color_img,depth_img,depth_frame = self.realsense.get_image(self.SHOW_RESULT_FLAG)
+            color_img,depth_img,depth_frame = self.get_measured_image()
 
             if color_img is not None :
+                detection_start = time.perf_counter()
                 harvestable_tom_pos = self.predict_extra.check_predict(F_or_B, color_img, conf= self.CONF_BASE_TH, iou= self.IOU_TH)
+                detection_elapsed = time.perf_counter() - detection_start
+                self.record_benchmark('object_detection', detection_elapsed, f'detected={harvestable_tom_pos is not None}')
                 if harvestable_tom_pos is not None and len(harvestable_tom_pos) != 0:
                     print("トマトがロボットの前付近に存在します")
                     mode = 0 # detect_check
@@ -337,22 +399,20 @@ class Vision_Service(Node):
             tomato_pos_msg = TomatoPos()
             tomato_dict = []
             # ★ 全体の計測開始
-            total_start = time.time()
+            total_start = time.perf_counter()
 
             # --------------------------------------------------
             # 1. カメラ初期化
             # --------------------------------------------------
-            step_start = time.time()
-            self.realsense.setup("230322272057") # 手先カメラ
-            self.get_logger().info(f"[TIME] 1. カメラsetup処理: {time.time() - step_start:.3f} 秒")
+            self.ensure_camera(self.hand_camera)
 
             # --------------------------------------------------
             # 2. 画像取得
             # --------------------------------------------------
-            step_start = time.time()
-            color_img,depth_img,depth_frame = self.realsense.get_image(self.SHOW_RESULT_FLAG)
+            step_start = time.perf_counter()
+            color_img,depth_img,depth_frame = self.get_measured_image()
             self.save_image(color_img, "orig_img")
-            self.get_logger().info(f"[TIME] 2. カメラ画像取得＆保存: {time.time() - step_start:.3f} 秒")
+            self.get_logger().info(f"[TIME] 2. カメラ画像取得＆保存: {time.perf_counter() - step_start:.3f} 秒")
             # # 画像取得
             # self.realsense.setup("230322272057") # 手先カメラ
             # color_img,depth_img,depth_frame = self.realsense.get_image(self.SHOW_RESULT_FLAG)
@@ -362,7 +422,7 @@ class Vision_Service(Node):
                 # --------------------------------------------------
                 # 3. フィルター処理
                 # --------------------------------------------------
-                step_start = time.time()  
+                step_start = time.perf_counter()  
                 if self.FILITER_TYPE == "non_filter":
                     self.get_logger().info('Retinexフィルタ: OFF')
                     filtered_img = color_img
@@ -374,21 +434,21 @@ class Vision_Service(Node):
                         filtered_img = color_img
 
                 self.save_image(filtered_img, "filtered_img")
-                self.get_logger().info(f"[TIME] 3. フィルター処理: {time.time() - step_start:.3f} 秒")
+                self.get_logger().info(f"[TIME] 3. フィルター処理: {time.perf_counter() - step_start:.3f} 秒")
                 
                 #  --------------------------------------------------
                 # 4. YOLO推論実行
                 # --------------------------------------------------
                 self.get_logger().info('推論実行')
-                step_start = time.time()
+                step_start = time.perf_counter()
                 yolo_results = self.predict_extra.run_predict(filtered_img, conf= self.CONF_BASE_TH, iou= self.IOU_TH)
-                self.get_logger().info(f"[TIME] 4. YOLO推論実行: {time.time() - step_start:.3f} 秒")
+                self.get_logger().info(f"[TIME] 4. YOLO推論実行: {time.perf_counter() - step_start:.3f} 秒")
 
                 if yolo_results is not None:
                     # --------------------------------------------------
                     # 5. マスク抽出と画像生成
                     # --------------------------------------------------
-                    step_start = time.time()
+                    step_start = time.perf_counter()
                     results_tomato, tom_heights_by_pixel = self.remove_small_mask_and_get_tom_height(yolo_results) # 奥にあるトマトを認識した場合、マスク面積のしきい値処理で除外
                     proc_times, color_mask, mask_main_stem, mask_peduncle, mask_tomato = self.predict_extra.extraction_and_color_mask(results_tomato)
                     
@@ -396,7 +456,7 @@ class Vision_Service(Node):
                         overlay_img = self.predict_extra.overlay_images(filtered_img, color_mask)
                         self.save_image(overlay_img, "overlay_img")
                         self.save_image(color_mask, "color_mask")
-                        self.get_logger().info(f"[TIME] 5. マスク抽出＆画像生成: {time.time() - step_start:.3f} 秒")
+                        self.get_logger().info(f"[TIME] 5. マスク抽出＆画像生成: {time.perf_counter() - step_start:.3f} 秒")
 
                         if self.SHOW_RESULT_FLAG:
                             cv2.imshow('overlay_image', overlay_img)
@@ -409,7 +469,7 @@ class Vision_Service(Node):
                     # 6. 熟度判定
                     # -------------------------------------------------- 
                     self.get_logger().info('熟度判定')
-                    step_start = time.time()
+                    step_start = time.perf_counter()
                     centers_of_ripe, centers_of_unripe, ripenesses, resuls_ripe_tom, tomato_dict = self.ripeness_judge.judge_ripeness(filtered_img, yolo_results, self.predict_extra.CONF_TOM, self.MIN_AREA_TH, tomato_dict)
                     
                     debug_tomato_dict = copy.deepcopy(tomato_dict)
@@ -421,23 +481,23 @@ class Vision_Service(Node):
                         self.get_logger().info(f"熟したトマトはありませんでした")
                         return tomato_pos_msg
                     self.get_logger().info(f"  → 結果(熟したトマトの中心座標): \n{centers_of_ripe}")
-                    self.get_logger().info(f"[TIME] 6. 熟度判定: {time.time() - step_start:.3f} 秒")
+                    self.get_logger().info(f"[TIME] 6. 熟度判定: {time.perf_counter() - step_start:.3f} 秒")
 
                     # --------------------------------------------------
                     # 7. 手先進入角度決定処理
                     # -------------------------------------------------- 
                     self.get_logger().info('\n手先進入角度決定処理')
-                    step_start = time.time()
+                    step_start = time.perf_counter()
                     tom_pos_with_approach_angle, tomato_dict = self.angle_determiner.determine_angle(resuls_ripe_tom, mask_main_stem, mask_peduncle, mask_tomato, centers_of_ripe, tomato_dict)
                     self.get_logger().info(f"  → 結果（[トマト中心座標] + [進入角度]）: \n{tom_pos_with_approach_angle}")
                     # print(f"角度決定後: {tomato_dict}")
                     # print(f"角度決定後: {json.dumps(tomato_dict, indent=4, default=self.convert_to_serializable)}")
-                    self.get_logger().info(f"[TIME] 7. 手先進入角度決定処理: {time.time() - step_start:.3f} 秒")
+                    self.get_logger().info(f"[TIME] 7. 手先進入角度決定処理: {time.perf_counter() - step_start:.3f} 秒")
 
                     # トマトの座標を画像座標系からカメラ座標系に変換
                     # ★ 深度エラー対策
                     self.get_logger().info('\n座標変換（画像系 → カメラ系）処理')
-                    step_start = time.time()
+                    step_start = time.perf_counter()
                     if depth_frame:
                         tomato_3d_posi, tomato_dict = self.realsense.imgpoint_to_3dpoint(depth_frame, tom_pos_with_approach_angle, mode, tomato_dict)
                         print(f"  → 結果: \n{tomato_3d_posi}")
@@ -460,8 +520,7 @@ class Vision_Service(Node):
                     
                     debug_tomato_dict = copy.deepcopy(tomato_dict)
                     self.get_logger().info(f"最終結果: {json.dumps(debug_tomato_dict, indent=4, default=self.convert_to_serializable)}")
-                    self.get_logger().info(f"[TIME] 8. 座標変換（画像系 → カメラ系 → アーム系）処理: {time.time() - step_start:.3f} 秒")
-
+                    self.get_logger().info(f"[TIME] 8. 座標変換（画像系 → カメラ系 → アーム系）処理: {time.perf_counter() - step_start:.3f} 秒")
 
                     # メッセージ型に変換
                     tomato_pos_msg = self.create_tomatopos_msg(target_coordinates)
@@ -493,6 +552,7 @@ class Vision_Service(Node):
 
     # ★★★ 修正: サービス全体を try-except で保護 ★★★
     def vision_host_server(self, request, response):
+        service_start = time.perf_counter()
         try:
             if request.task == "detect_check" :
                 if request.direction == "f":
@@ -530,6 +590,8 @@ class Vision_Service(Node):
                 else:
                     response.detect_check = False
             
+            service_elapsed = time.perf_counter() - service_start
+            self.record_benchmark('service_total', service_elapsed, f'task={request.task}')
             return response
 
         except Exception as e:
@@ -538,7 +600,22 @@ class Vision_Service(Node):
             # エラー時もレスポンスを返してクライアントを止めない
             response.detect_check = False
             response.target_pos = TomatoPos()
+            service_elapsed = time.perf_counter() - service_start
+            self.record_benchmark('service_total', service_elapsed, f'task={request.task} error=true')
             return response
+
+    def destroy_node(self):
+        """カメラを解放し、計測結果を出力する。"""
+        for name, samples in self.benchmark_samples.items():
+            if samples:
+                self.get_logger().info(
+                    f'[BENCH SUMMARY] {name} count={len(samples)} '
+                    f'mean={statistics.fmean(samples):.6f}s '
+                    f'median={statistics.median(samples):.6f}s '
+                    f'max={max(samples):.6f}s')
+        if hasattr(self, 'realsense'):
+            self.realsense.stop()
+        return super().destroy_node()
 
 def main():
     rclpy.init() 

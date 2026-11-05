@@ -9,7 +9,8 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
-        ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name, ['package.xml', 'README_auto_harvest_ja.md']),
+        ('share/' + package_name + '/config', ['config/auto_harvest.yaml']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -25,6 +26,8 @@ setup(
             'suction_module_client_node = end_effector_pkg.suction_module_client_node:main',
             'suction_module_teleop = end_effector_pkg.suction_module_teleop:main',
             'end_effector_teleop = end_effector_pkg.end_effector_teleop:main',
+            'pull_module_teleop = end_effector_pkg.pull_module_teleop:main',
+            'auto_harvest = end_effector_pkg.auto_harvest_node:main',
         ],
     },
 )

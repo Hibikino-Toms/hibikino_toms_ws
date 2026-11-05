@@ -9,7 +9,11 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
-        ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name, ['package.xml', 'README_realtime_ja.md']),
+        ('share/' + package_name + '/config', ['config/realtime_detector.yaml']),
+        ('share/' + package_name + '/launch', ['launch/vision_service_realtime.launch.py']),
+        ('share/' + package_name + '/launch', ['launch/vision_xy_tracking.launch.py']),
+        ('share/' + package_name + '/launch', ['launch/vision_auto_harvest.launch.py']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -34,6 +38,7 @@ setup(
             'cam_pub_service_rev2 = vision_pkg.cam_pub_service_rev2:main',
             'vision_service_ipad_dual_topic = vision_pkg.vision_service_ipad_dual_topic:main',
             'vision_service_bench = vision_pkg.vision_service_bench:main',
+            'vision_service_realtime = vision_pkg.vison_sevice_realtime:main',
         ],
     },
 )

@@ -1,6 +1,1786 @@
+# #!/usr/bin/env python
+# # -*- coding: utf-8 -*-
+
+# import sys
+# import os
+# from datetime import datetime
+# import yaml
+
+# # ros2_library
+# import rclpy
+# from rclpy.node import Node
+# # rclpy.qos から qos_profile_services_default をインポート
+# from rclpy.qos import qos_profile_services_default
+# from toms_msg.msg import TomatoPos,TomatoData
+# from toms_msg.srv import VisionService
+
+# # python library
+# import cv2
+# import numpy as np
+# import json
+# import csv
+# import copy
+
+# from ultralytics import YOLO
+
+# sys.path.append('/home/ylab/hibikino_toms_ws/src/vision_pkg/vision_pkg/modules')
+# from .modules.realsense_module_ipad import Realsense_Module
+# from .modules.ripeness_judge import Ripeness_Judge
+# from .modules.filter_tools import Filter_SSR, Filter_MSR, Filter_MSRCR
+# from .modules.harvest_order import Harvest_Order
+# from .modules.predict_extraction import Predict_Extra
+# from .modules.appro_angle_determiner import Approach_Angle_Determiner
+
+# """
+# @author yoshida keisuke, 吉永
+# -----------------------------------------
+# vision service node
+# 画像処理司令を受け取って,要求された情報を返すノード
+
+# 2025/1/20時点
+# TODO: Retinexフィルターの種類選択とパラメータ設定処理
+# TODO: yolo_toolsの実装 →YOLOの設定ファイル。動作開始直後の初回の認識時間を短縮できる。
+# TODO: 2段階収穫動作の処理実装
+# """
+
+# class Vision_Service(Node):  
+#     def __init__(self):
+#         super().__init__('vision_service') 
+
+#         #service
+#         self.vision_host_server_object = self.create_service(
+#             VisionService,
+#             "vision_service",
+#             self.vision_host_server,
+#             # QoSプロファイルを明示的に指定
+#             qos_profile=qos_profile_services_default)
+        
+#         # パラメータ設定用のyamlファイル
+#         yaml_path = '/home/ylab/hibikino_toms_ws/module/set_params.yaml'
+#         # YAMLファイルの読み込み
+
+#         # print文を無効化（ログの出力はされる）
+#         params = self.load_yaml(yaml_path)
+#         DEBUG = params["DEBUG"]
+#         if DEBUG:
+#             sys.stdout = open(os.devnull, 'w')
+#         else:
+#             sys.stdout = sys.__stdout__
+
+#         vision_params = params["vision_params"]
+#         camera_params = vision_params["camera_params"]
+        
+#         self.SHOW_RESULT_FLAG = vision_params["SHOW_RESULT"]
+#         self.FILITER_TYPE = vision_params["FILITER_TYPE"]
+        
+#         # 推論パラメータ
+#         WEIGHT_PATH = vision_params["WEIGHT_PATH"]     # 最終的に仕様する重みのパスを入力
+#         self.CONF_BASE_TH = vision_params["CONF_BASE_TH"]
+#         self.IOU_TH = vision_params["IOU_TH"]
+#         self.MIN_AREA_TH = vision_params["MIN_AREA_TH"]
+
+#         # データの保存先
+#         IMG_SAVE_DIR_PATH = vision_params["IMG_SAVE_DIR_PATH"]
+#         self.IMG_SAVE_DIL = self.create_output_directory(IMG_SAVE_DIR_PATH)
+#         RESULT_SAVE_DIR_PATH = vision_params["PROC_RESULT_SAVE_DIR_PATH"]
+#         self.RESULT_SAVE_DIL = self.create_output_directory(RESULT_SAVE_DIR_PATH)
+
+#         # 処理時のパラメータ
+#         self.APPROACH_ANG = vision_params["APPROACH_ANG"]
+
+#         #library
+        
+#         self.realsense = Realsense_Module(camera_params)
+#         self.harvest_order = Harvest_Order(vision_params)
+#         self.ripeness_judge = Ripeness_Judge(vision_params)
+#         self.predict_extra = Predict_Extra(vision_params)
+#         self.angle_determiner = Approach_Angle_Determiner(camera_params)
+#         self.get_logger().info('ビジョンサーバ起動')
+    
+#     @staticmethod
+#     def load_yaml(file_path):
+#         """YAMLファイルを読み込むヘルパー関数"""
+#         try:
+#             with open(file_path, "r") as file:
+#                 return yaml.safe_load(file)
+#         except FileNotFoundError:
+#             raise FileNotFoundError(f"YAMLファイルが見つかりません: {file_path}")
+#         except yaml.YAMLError as e:
+#             raise ValueError(f"YAMLファイルの解析エラー: {e}")
+    
+#     @staticmethod
+#     def convert_to_serializable(obj):
+#         if obj is None:  # None をそのまま返す
+#             return None
+#         if isinstance(obj, np.ndarray):
+#             return obj.tolist()  # NumPy配列をリストに変換
+#         if isinstance(obj, (np.float32, np.float64)): 
+#             return float(obj)  # NumPyのfloatをPythonのfloatに変換
+#         if isinstance(obj, (np.int32, np.int64)): 
+#             return int(obj)  # NumPyのintをPythonのintに変換
+#         raise TypeError(f"Type {type(obj)} not serializable")
+
+#     def ensure_realsense(self, serial_no : str):
+#         """
+#         必要になったときだけRealSenseを開く
+        
+#         """
+#         # realsenseが開いていない or stopしたあとならここで開く
+#         self.realsense.setup(serial_no)
+    
+#     def release_realsense(self):
+#         """
+#         処理が終わったら手放す(ストリーミングに譲る)場合に呼ぶ
+#         """
+#         if self.realsense is not None:
+#             self.realsense.stop()
+
+#     def create_output_directory(self, IMG_SAVE_DIR_PATH):
+#         # 実行時の日付でディレクトリ名を作成
+#         date_str = datetime.now().strftime("%Y_%m_%d")
+#         directory_path = os.path.join(IMG_SAVE_DIR_PATH, date_str)
+
+#         # ディレクトリが存在しなければ作成
+#         os.makedirs(directory_path, exist_ok=True)
+#         return directory_path
+    
+#     def save_image(self, image, prefix="image"):
+#         # 実行時の時間でファイル名を生成
+#         self.time_str = datetime.now().strftime("%H-%M-%S")
+#         file_name = f"{self.time_str}_{prefix}.jpg"
+#         file_path = os.path.join(self.IMG_SAVE_DIL, file_name)
+
+#         # OpenCVを使用して画像を保存
+#         cv2.imwrite(file_path, image)
+#         return file_path
+    
+
+#     def save_result_data(self, data):
+#         # 実行時の時間でファイル名を生成
+#         file_name = f"{self.time_str}_result.csv"
+#         file_path = os.path.join(self.RESULT_SAVE_DIL, file_name)
+#         # データをフラット化
+#         flat_data = [self.flatten_json(item) for item in data]
+#         empty_data =[]
+        
+#         # CSVのヘッダー（最初の行）としてキーを取得
+#         if len(data) == 0:
+#             keys = ["id","conf","image_coords","ripeness","is_ripe","approach_ang","camera_coords","arm_coords","harvest_order"]  # 空のデータに対応するデフォルトのキー
+#             empty_data = []
+#         else:
+#             keys = flat_data[0].keys()
+#             empty_data = data
+        
+#         with open(file_path, 'w', newline='', encoding='utf-8') as f:
+#             writer = csv.DictWriter(f, fieldnames=keys)
+#             writer.writeheader()  # ヘッダーを記録
+#             if len(empty_data) > 0:
+#                 writer.writerows(empty_data)  # 空でない場合はデータを記録
+#             # print(f"データをCSVとして保存しました: {file_path}")
+#         return file_path
+    
+#     def flatten_json(self, nested_json):
+#         """ネストされたJSONを平坦化"""
+#         flat_dict = {}
+        
+#         def flatten(item, name=''):
+#             if type(item) is dict:
+#                 for key in item:
+#                     flatten(item[key], name + key + '_')
+#             else:
+#                 flat_dict[name[:-1]] = item
+            
+#         flatten(nested_json)
+#         return flat_dict
+
+#     def detect_check(self, F_or_B):
+
+#         # self.realsense.setup("827312071693") # D435(俯瞰カメラ)のID: realsense-viewerで確認
+        
+#         self.ensure_realsense("827312071693")
+
+#         self.get_logger().info("detect_check")
+#         check = None
+#         harvestable_tom_pos = []
+#         tom_3d_pos = []
+#         # 俯瞰カメラによる撮影で画像を取得する
+#         color_img,depth_img,depth_frame = self.realsense.get_image(self.SHOW_RESULT_FLAG)
+
+#         if color_img is not None :
+#             harvestable_tom_pos = self.predict_extra.check_predict(F_or_B, color_img, conf= self.CONF_BASE_TH, iou= self.IOU_TH)
+#             if harvestable_tom_pos is not None and len(harvestable_tom_pos) != 0:
+#                 print("トマトがロボットの前付近に存在します")
+#                 mode = 0 # detect_check
+#                 empty_dict = []
+#                 tom_3d_pos, _ = self.realsense.imgpoint_to_3dpoint(depth_frame, harvestable_tom_pos, mode, empty_dict)
+#                 check = True
+#             else:
+#                 print("トマトは無いようです。。。")
+#                 check = False
+#         print(f"tom_3d_pos: {tom_3d_pos}")
+#         if tom_3d_pos is not None:
+#             tom_pos_msg = self.create_tomatopos_msg(tom_3d_pos)
+
+#         # 使い終わったら開放しておく
+#         self.release_realsense()
+
+#         return tom_pos_msg, check
+
+#     def select_filter(self):
+#         match self.FILITER_TYPE:
+#             case "ssr":
+#                 print("Filter type is SSR")
+#                 filter = Filter_SSR()
+#                 param = [] # 任意のパラメータを設定
+#             case "msr":
+#                 print("Filter type is MSR")
+#                 filter = Filter_MSR()
+#                 param = [] # 任意のパラメータを設定
+#             case "msrcr":
+#                 print("Filter type is MSRCR")
+#                 filter = Filter_MSRCR()
+#                 param = [] # 任意のパラメータを設定
+        
+#         return filter, param
+    
+#     def remove_small_mask_and_get_tom_height(self, results):
+#         removed_result_tomato = []
+#         mask_heights = []
+        
+#         for r in results:
+#             masks = r.masks.data.cpu().numpy() if r.masks is not None else None
+#             if masks is None:
+#                 continue
+            
+#             for ci, mask in enumerate(masks):
+#                 label = r.names[r.boxes.cls.tolist()[ci]]  # トマトのラベルを取得
+#                 scores = r.boxes.conf.cpu().numpy()[ci]  # 各スコアを取得
+
+#                 if label == "tomato" and scores > self.predict_extra.CONF_TOM:
+#                     # 各マスクの面積を計算
+#                     mask_area = np.sum(mask != 0)  # 255以外のピクセルがトマト領域を示す
+#                     if mask_area < self.MIN_AREA_TH:  # 面積がしきい値以下なら無視
+#                         continue
+                    
+#                     # マスクの高さを計算
+#                     mask_indices = np.where(mask != 0)
+#                     height = int(np.max(mask_indices[0]) - np.min(mask_indices[0]))  # 高さの計算
+
+#                     # 高さをリストに追加
+#                     mask_heights.append(height)
+#                     removed_result_tomato.append(r)  # しきい値を超えるトマトの結果を追加
+        
+#         return removed_result_tomato, mask_heights
+    
+#     def draw_ripe_tomato_angle(self, image, tomato_dict):
+#         for tomato in tomato_dict:
+#             # トマトが熟している場合（is_ripeがTrue）のみ処理を実行
+#             if tomato.get('is_ripe', False):
+#                 # 画像内座標
+#                 coord = tomato['image_coords']
+#                 x = coord[0]
+#                 y = coord[1]
+
+#                 # approach_ang に応じた L/F/R を決定
+#                 approach_ang = tomato['approach_ang']
+#                 if approach_ang == -1:
+#                     direction = "L"
+#                     text_position = (x - 50, y)  # トマト中心より左に描画
+#                 elif approach_ang == 0:
+#                     direction = "F"
+#                     text_position = (x - 25, y + 25)  # トマト中心より下に描画
+#                 elif approach_ang == 1:
+#                     direction = "R"
+#                     text_position = (x + 25, y)  # トマト中心より右に描画
+#                 else:
+#                     direction = "?"  # 万が一、-1/0/1以外の値があった場合
+#                     text_position = (x, y)  # デフォルトは中心に描画
+
+#                 # harvest_order を取得
+#                 harvest_order = tomato.get('harvest_order', "?")
+
+#                 # 描画する文字列を生成（例: L-1, F-2, R-3）
+#                 text = f"{direction}"
+
+#                 # 文字の色と太さなどを設定
+#                 font = cv2.FONT_HERSHEY_SIMPLEX
+#                 color = (0, 0, 0)  # 黒色
+#                 thickness = 2
+#                 font_scale = 0.7
+
+#                 # 文字を画像に描画
+#                 cv2.putText(image, text, text_position, font, font_scale, color, thickness, cv2.LINE_AA)
+#         return image
+
+
+#     def main_process(self, F_B):
+#         self.get_logger().info("main_process")
+        
+#         mode = 1
+#         tomato_pos_msg = TomatoPos()
+#         tomato_dict = []
+
+#         # 画像取得
+#         # self.realsense.setup("230322272057") # 手先カメラ
+#         self.ensure_realsense("230322272057")
+#         color_img,depth_img,depth_frame = self.realsense.get_image(self.SHOW_RESULT_FLAG)
+        
+
+#         if color_img is not None :
+#             self.save_image(color_img, "orig_img")
+#             # Rerinexフィルタ処理
+#             # TODO: Retinexフィルターのパラメータ設定
+#             if self.FILITER_TYPE == "non_filter":
+#                 self.get_logger().info('Retinexフィルタ: OFF')
+#                 filtered_img = color_img
+#             else:
+#                 filter, param = self.select_filter()
+#                 filtered_img = filter.retinex_filter(color_img, param)
+#             self.save_image(filtered_img, "filtered_img")
+            
+#             # 推論実行
+#             self.get_logger().info('推論実行')
+#             yolo_results = self.predict_extra.run_predict(filtered_img, conf= self.CONF_BASE_TH, iou= self.IOU_TH)
+            
+#             if yolo_results is not None:
+#                 results_tomato, tom_heights_by_pixel = self.remove_small_mask_and_get_tom_height(yolo_results) # 奥にあるトマトを認識した場合、マスク面積のしきい値処理で除外
+#                 proc_times, color_mask, mask_main_stem, mask_peduncle, mask_tomato = self.predict_extra.extraction_and_color_mask(results_tomato)
+#                 overlay_img = self.predict_extra.overlay_images(filtered_img, color_mask)
+#                 self.save_image(overlay_img, "overlay_img")
+#                 self.save_image(color_mask, "color_mask")
+                
+#                 if self.SHOW_RESULT_FLAG:
+#                     cv2.imshow('overlay_image', overlay_img)
+#                     cv2.waitKey(500)
+#                     cv2.destroyAllWindows()
+                
+#                 # 熟度判定
+#                 self.get_logger().info('熟度判定')
+#                 centers_of_ripe, centers_of_unripe, ripenesses, resuls_ripe_tom, tomato_dict = self.ripeness_judge.judge_ripeness(filtered_img, yolo_results, self.predict_extra.CONF_TOM, self.MIN_AREA_TH, tomato_dict)
+                
+#                 debug_tomato_dict = copy.deepcopy(tomato_dict)
+#                 print(f"熟度判定後: {json.dumps(debug_tomato_dict, indent=4, default=self.convert_to_serializable)}")
+#                 # print(f"熟度判定後: {tomato_dict}")
+                
+#                 self.get_logger().info(f"認識したトマトの熟度: \n{ripenesses}")
+#                 if len(centers_of_ripe) == 0:
+#                     self.get_logger().info(f"熟したトマトはありませんでした")
+#                     self.release_realsense()
+#                     return tomato_pos_msg
+#                 self.get_logger().info(f"  → 結果(熟したトマトの中心座標): \n{centers_of_ripe}")
+                
+#                 # 手先進入角度算出処理
+#                 print('\n手先進入角度決定処理')
+#                 tom_pos_with_approach_angle, tomato_dict = self.angle_determiner.determine_angle(resuls_ripe_tom, mask_main_stem, mask_peduncle, mask_tomato, centers_of_ripe, tomato_dict)
+#                 print(f"  → 結果（[トマト中心座標] + [進入角度]）: \n{tom_pos_with_approach_angle}")
+#                 # print(f"角度決定後: {tomato_dict}")
+#                 # print(f"角度決定後: {json.dumps(tomato_dict, indent=4, default=self.convert_to_serializable)}")
+                
+#                 # トマトの座標を画像座標系からカメラ座標系に変換
+#                 print('\n座標変換（画像系 → カメラ系）処理')
+#                 tomato_3d_posi, tomato_dict = self.realsense.imgpoint_to_3dpoint(depth_frame, tom_pos_with_approach_angle, mode, tomato_dict)
+#                 print(f"  → 結果: \n{tomato_3d_posi}")
+                
+#                 # print(f"座標変換後: \n{json.dumps(tomato_dict, indent=4, default=self.convert_to_serializable)}")
+
+#                 # アーム座標に変換された、[トマトの3次元座標，手先進入角度]×熟したトマトの個数 の配列が返ってくる
+#                 print('\n座標変換（カメラ系 → アーム系）処理')
+#                 target_coordinates, tomato_dict = self.harvest_order.order_decision(tomato_3d_posi, tom_heights_by_pixel, tomato_dict)
+#                 print(f"  → 結果: \n{target_coordinates}")
+                
+#                 result_image = self.draw_ripe_tomato_angle(overlay_img, tomato_dict)
+#                 self.save_image(result_image, "result_image")
+
+#                 # 各処理の結果のリストを保存
+#                 self.save_result_data(tomato_dict)
+                
+#                 debug_tomato_dict = copy.deepcopy(tomato_dict)
+#                 print(f"最終結果: {json.dumps(debug_tomato_dict, indent=4, default=self.convert_to_serializable)}")
+
+#                 # メッセージ型に変換
+#                 tomato_pos_msg = self.create_tomatopos_msg(target_coordinates)
+#                 #tomato_pos_msg = target_coordinates # デバッグ用
+#                 self.release_realsense()
+#                 return tomato_pos_msg
+#             else :
+#                 self.release_realsense()
+#                 return tomato_pos_msg
+
+#     def create_tomatopos_msg(self,target_coordinates):
+#         tomato_pos_msg = TomatoPos()
+#         for target_coordinate in target_coordinates:
+#             tomato_data = TomatoData()
+#             tomato_data.x = int(target_coordinate[0])
+#             tomato_data.y = int(target_coordinate[1])
+#             tomato_data.z = int(target_coordinate[2])
+#             tomato_data.approach_direction = int(target_coordinate[3])
+#             tomato_pos_msg.tomato_data.append(tomato_data)
+#         return tomato_pos_msg
+
+#     def vision_host_server(self, request, response):
+#         if request.task == "detect_check" :
+#             if request.direction == "f":
+#                 forward_or_back = "f"
+#             elif request.direction == "b":
+#                 forward_or_back = "b"
+            
+#             # ロボット正面付近にトマトがあるかcheck
+#             self.get_logger().info('ロボット正面付近にトマトがあるかcheck')
+#             tom_pos, check_tomato = self.detect_check(forward_or_back)
+#             self.get_logger().info(f'check_tomato: {check_tomato}')
+#             print(f"tomato : {tom_pos}")
+#             if check_tomato == True:
+#                 self.get_logger().info('トマト発見！！！')
+#                 response.detect_check = True
+#                 response.target_pos = tom_pos
+#             elif check_tomato == False:
+#                 self.get_logger().info('トマトは無いみたい・・・。')
+#                 response.detect_check = False
+#             else:
+#                 self.get_logger().info('認識器の問題でトマトを認識できませんでした')
+#                 response.detect_check = False
+        
+#         else :
+#             forward_or_back = str(request.direction)
+#             target_coordinates = self.main_process(forward_or_back)
+#             self.get_logger().info(f'target_coordinates: {target_coordinates}')
+#             response.target_pos = target_coordinates
+#             response.detect_check = True
+        
+#         return response
+
+# def main():
+#     rclpy.init() 
+#     node=Vision_Service() 
+#     try :
+#         rclpy.spin(node)       
+#     except KeyboardInterrupt :
+#         print("\nCtrl+C has been typed")
+#     finally:
+#         sys.stdout = sys.__stdout__
+#         node.destroy_node()
+
+
+# if __name__ == "__main__":
+#     main()
+
+
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# import sys
+# import os
+# from datetime import datetime
+# import yaml
+
+# # ros2_library
+# import rclpy
+# from rclpy.node import Node
+# # rclpy.qos から qos_profile_services_default をインポート
+# from rclpy.qos import qos_profile_services_default, qos_profile_sensor_data
+# from toms_msg.msg import TomatoPos,TomatoData
+# from toms_msg.srv import VisionService
+# from sensor_msgs.msg import CompressedImage
+
+# # python library
+# import cv2
+# import numpy as np
+# import json
+# import csv
+# import copy
+
+# from ultralytics import YOLO
+
+# sys.path.append('/home/ylab/hibikino_toms_ws/src/vision_pkg/vision_pkg/modules')
+# from .modules.realsense_module_rev1 import Realsense_Module
+# from .modules.ripeness_judge import Ripeness_Judge
+# from .modules.filter_tools import Filter_SSR, Filter_MSR, Filter_MSRCR
+# from .modules.harvest_order import Harvest_Order
+# from .modules.predict_extraction import Predict_Extra
+# from .modules.appro_angle_determiner import Approach_Angle_Determiner
+
+# """
+# @author yoshida keisuke, 吉永
+# -----------------------------------------
+# vision service node
+# 画像処理司令を受け取って,要求された情報を返すノード
+
+# 2025/1/20時点
+# TODO: Retinexフィルターの種類選択とパラメータ設定処理
+# TODO: yolo_toolsの実装 →YOLOの設定ファイル。動作開始直後の初回の認識時間を短縮できる。
+# TODO: 2段階収穫動作の処理実装
+# """
+
+# class Vision_Service(Node):  
+#     def __init__(self):
+#         super().__init__('vision_service') 
+
+#         #service
+#         self.vision_host_server_object = self.create_service(
+#             VisionService,
+#             "vision_service",
+#             self.vision_host_server,
+#             # QoSプロファイルを明示的に指定
+#             qos_profile=qos_profile_services_default)
+
+#         # UI表示用のカメラトピック。俯瞰・手先を別々に常時配信する。
+#         self.pub_hand = self.create_publisher(
+#             CompressedImage,
+#             '/camera/hand/image/compressed',
+#             qos_profile_sensor_data)
+#         self.pub_over = self.create_publisher(
+#             CompressedImage,
+#             '/camera/over/image/compressed',
+#             qos_profile_sensor_data)
+        
+#         # パラメータ設定用のyamlファイル
+#         yaml_path = '/home/ylab/hibikino_toms_ws/module/set_params.yaml'
+#         # YAMLファイルの読み込み
+
+#         # print文を無効化（ログの出力はされる）
+#         params = self.load_yaml(yaml_path)
+#         DEBUG = params["DEBUG"]
+#         if DEBUG:
+#             sys.stdout = open(os.devnull, 'w')
+#         else:
+#             sys.stdout = sys.__stdout__
+
+#         vision_params = params["vision_params"]
+#         camera_params = vision_params["camera_params"]
+        
+#         self.SHOW_RESULT_FLAG = vision_params["SHOW_RESULT"]
+#         self.FILITER_TYPE = vision_params["FILITER_TYPE"]
+        
+#         # 推論パラメータ
+#         WEIGHT_PATH = vision_params["WEIGHT_PATH"]     # 最終的に仕様する重みのパスを入力
+#         self.CONF_BASE_TH = vision_params["CONF_BASE_TH"]
+#         self.IOU_TH = vision_params["IOU_TH"]
+#         self.MIN_AREA_TH = vision_params["MIN_AREA_TH"]
+
+#         # データの保存先
+#         IMG_SAVE_DIR_PATH = vision_params["IMG_SAVE_DIR_PATH"]
+#         self.IMG_SAVE_DIL = self.create_output_directory(IMG_SAVE_DIR_PATH)
+#         RESULT_SAVE_DIR_PATH = vision_params["PROC_RESULT_SAVE_DIR_PATH"]
+#         self.RESULT_SAVE_DIL = self.create_output_directory(RESULT_SAVE_DIR_PATH)
+
+#         # 処理時のパラメータ
+#         self.APPROACH_ANG = vision_params["APPROACH_ANG"]
+
+#         #library
+        
+#         # カメラごとに独立したRealSenseインスタンスを持つ。
+#         # サービス要求のたびにsetup/stopせず、ノード終了まで起動状態を維持する。
+#         self.serial_hand = "230322272057"
+#         self.serial_over = "827312071693"
+#         self.realsense_hand = Realsense_Module(copy.deepcopy(camera_params))
+#         self.realsense_over = Realsense_Module(copy.deepcopy(camera_params))
+#         self.harvest_order = Harvest_Order(vision_params)
+#         self.ripeness_judge = Ripeness_Judge(vision_params)
+#         self.predict_extra = Predict_Extra(vision_params)
+#         self.angle_determiner = Approach_Angle_Determiner(camera_params)
+
+#         self.latest_frames = {
+#             'hand': None,
+#             'over': None,
+#         }
+#         self.STREAM_FPS = 15.0
+#         self.JPEG_QUALITY = 70
+
+#         try:
+#             self.realsense_hand.setup(self.serial_hand)
+#             self.get_logger().info('手先カメラ起動完了')
+#             self.realsense_over.setup(self.serial_over)
+#             self.get_logger().info('俯瞰カメラ起動完了')
+#         except Exception:
+#             self.release_realsense()
+#             raise
+
+#         self.timer_hand = self.create_timer(
+#             1.0 / self.STREAM_FPS,
+#             self.streaming_loop_hand)
+#         self.timer_over = self.create_timer(
+#             1.0 / self.STREAM_FPS,
+#             self.streaming_loop_over)
+#         self.get_logger().info('ビジョンサーバ起動')
+    
+#     @staticmethod
+#     def load_yaml(file_path):
+#         """YAMLファイルを読み込むヘルパー関数"""
+#         try:
+#             with open(file_path, "r") as file:
+#                 return yaml.safe_load(file)
+#         except FileNotFoundError:
+#             raise FileNotFoundError(f"YAMLファイルが見つかりません: {file_path}")
+#         except yaml.YAMLError as e:
+#             raise ValueError(f"YAMLファイルの解析エラー: {e}")
+    
+#     @staticmethod
+#     def convert_to_serializable(obj):
+#         if obj is None:  # None をそのまま返す
+#             return None
+#         if isinstance(obj, np.ndarray):
+#             return obj.tolist()  # NumPy配列をリストに変換
+#         if isinstance(obj, (np.float32, np.float64)): 
+#             return float(obj)  # NumPyのfloatをPythonのfloatに変換
+#         if isinstance(obj, (np.int32, np.int64)): 
+#             return int(obj)  # NumPyのintをPythonのintに変換
+#         raise TypeError(f"Type {type(obj)} not serializable")
+
+#     def streaming_loop_hand(self):
+#         self.publish_camera_image(
+#             'hand',
+#             self.realsense_hand,
+#             self.pub_hand,
+#             'camera_hand_color_optical_frame')
+
+#     def streaming_loop_over(self):
+#         self.publish_camera_image(
+#             'over',
+#             self.realsense_over,
+#             self.pub_over,
+#             'camera_over_color_optical_frame')
+
+#     def publish_camera_image(self, camera_key, realsense, publisher, frame_id):
+#         """最新フレームを保存し、UI用のJPEG画像を配信する。"""
+#         try:
+#             color_img, depth_img, depth_frame = realsense.get_image(False)
+#             if color_img is None:
+#                 return
+
+#             # 認識サービスでは、ここで取得済みの最新RGB・Depthを再利用する。
+#             self.latest_frames[camera_key] = (
+#                 color_img,
+#                 depth_img,
+#                 depth_frame)
+
+#             encode_params = [
+#                 int(cv2.IMWRITE_JPEG_QUALITY),
+#                 self.JPEG_QUALITY]
+#             success, encoded = cv2.imencode(
+#                 '.jpg', color_img, encode_params)
+#             if not success:
+#                 return
+
+#             msg = CompressedImage()
+#             msg.header.stamp = self.get_clock().now().to_msg()
+#             msg.header.frame_id = frame_id
+#             msg.format = 'jpeg'
+#             msg.data = encoded.tobytes()
+#             publisher.publish(msg)
+#         except Exception as error:
+#             self.get_logger().warning(
+#                 f'{camera_key} camera streaming error: {error!r}')
+
+#     def get_latest_frame(self, camera_key, realsense):
+#         """配信済みの最新フレームを返し、未取得時だけ直接撮影する。"""
+#         frame = self.latest_frames[camera_key]
+#         if frame is None:
+#             frame = realsense.get_image(self.SHOW_RESULT_FLAG)
+#             self.latest_frames[camera_key] = frame
+#         return frame
+
+#     def release_realsense(self):
+#         """ノード終了時に両方のカメラを停止する。"""
+#         for camera_name, realsense in (
+#                 ('hand', getattr(self, 'realsense_hand', None)),
+#                 ('over', getattr(self, 'realsense_over', None))):
+#             if realsense is None:
+#                 continue
+#             try:
+#                 realsense.stop()
+#             except Exception as error:
+#                 self.get_logger().warning(
+#                     f'{camera_name} camera stop error: {error!r}')
+
+#     def create_output_directory(self, IMG_SAVE_DIR_PATH):
+#         # 実行時の日付でディレクトリ名を作成
+#         date_str = datetime.now().strftime("%Y_%m_%d")
+#         directory_path = os.path.join(IMG_SAVE_DIR_PATH, date_str)
+
+#         # ディレクトリが存在しなければ作成
+#         os.makedirs(directory_path, exist_ok=True)
+#         return directory_path
+    
+#     def save_image(self, image, prefix="image"):
+#         # 実行時の時間でファイル名を生成
+#         self.time_str = datetime.now().strftime("%H-%M-%S")
+#         file_name = f"{self.time_str}_{prefix}.jpg"
+#         file_path = os.path.join(self.IMG_SAVE_DIL, file_name)
+
+#         # OpenCVを使用して画像を保存
+#         cv2.imwrite(file_path, image)
+#         return file_path
+    
+
+#     def save_result_data(self, data):
+#         # 実行時の時間でファイル名を生成
+#         file_name = f"{self.time_str}_result.csv"
+#         file_path = os.path.join(self.RESULT_SAVE_DIL, file_name)
+#         # データをフラット化
+#         flat_data = [self.flatten_json(item) for item in data]
+#         empty_data =[]
+        
+#         # CSVのヘッダー（最初の行）としてキーを取得
+#         if len(data) == 0:
+#             keys = ["id","conf","image_coords","ripeness","is_ripe","approach_ang","camera_coords","arm_coords","harvest_order"]  # 空のデータに対応するデフォルトのキー
+#             empty_data = []
+#         else:
+#             keys = flat_data[0].keys()
+#             empty_data = data
+        
+#         with open(file_path, 'w', newline='', encoding='utf-8') as f:
+#             writer = csv.DictWriter(f, fieldnames=keys)
+#             writer.writeheader()  # ヘッダーを記録
+#             if len(empty_data) > 0:
+#                 writer.writerows(empty_data)  # 空でない場合はデータを記録
+#             # print(f"データをCSVとして保存しました: {file_path}")
+#         return file_path
+    
+#     def flatten_json(self, nested_json):
+#         """ネストされたJSONを平坦化"""
+#         flat_dict = {}
+        
+#         def flatten(item, name=''):
+#             if type(item) is dict:
+#                 for key in item:
+#                     flatten(item[key], name + key + '_')
+#             else:
+#                 flat_dict[name[:-1]] = item
+            
+#         flatten(nested_json)
+#         return flat_dict
+
+#     def detect_check(self, F_or_B):
+
+#         self.get_logger().info("detect_check")
+#         check = None
+#         harvestable_tom_pos = []
+#         tom_3d_pos = []
+#         # 俯瞰カメラによる撮影で画像を取得する
+#         color_img,depth_img,depth_frame = self.get_latest_frame(
+#             'over', self.realsense_over)
+
+#         if color_img is not None :
+#             harvestable_tom_pos = self.predict_extra.check_predict(F_or_B, color_img, conf= self.CONF_BASE_TH, iou= self.IOU_TH)
+#             if harvestable_tom_pos is not None and len(harvestable_tom_pos) != 0:
+#                 print("トマトがロボットの前付近に存在します")
+#                 mode = 0 # detect_check
+#                 empty_dict = []
+#                 tom_3d_pos, _ = self.realsense_over.imgpoint_to_3dpoint(
+#                     depth_frame, harvestable_tom_pos, mode, empty_dict)
+#                 check = True
+#             else:
+#                 print("トマトは無いようです。。。")
+#                 check = False
+#         print(f"tom_3d_pos: {tom_3d_pos}")
+#         if tom_3d_pos is not None:
+#             tom_pos_msg = self.create_tomatopos_msg(tom_3d_pos)
+
+#         return tom_pos_msg, check
+
+#     def select_filter(self):
+#         match self.FILITER_TYPE:
+#             case "ssr":
+#                 print("Filter type is SSR")
+#                 filter = Filter_SSR()
+#                 param = [] # 任意のパラメータを設定
+#             case "msr":
+#                 print("Filter type is MSR")
+#                 filter = Filter_MSR()
+#                 param = [] # 任意のパラメータを設定
+#             case "msrcr":
+#                 print("Filter type is MSRCR")
+#                 filter = Filter_MSRCR()
+#                 param = [] # 任意のパラメータを設定
+        
+#         return filter, param
+    
+#     def remove_small_mask_and_get_tom_height(self, results):
+#         removed_result_tomato = []
+#         mask_heights = []
+        
+#         for r in results:
+#             masks = r.masks.data.cpu().numpy() if r.masks is not None else None
+#             if masks is None:
+#                 continue
+            
+#             for ci, mask in enumerate(masks):
+#                 label = r.names[r.boxes.cls.tolist()[ci]]  # トマトのラベルを取得
+#                 scores = r.boxes.conf.cpu().numpy()[ci]  # 各スコアを取得
+
+#                 if label == "tomato" and scores > self.predict_extra.CONF_TOM:
+#                     # 各マスクの面積を計算
+#                     mask_area = np.sum(mask != 0)  # 255以外のピクセルがトマト領域を示す
+#                     if mask_area < self.MIN_AREA_TH:  # 面積がしきい値以下なら無視
+#                         continue
+                    
+#                     # マスクの高さを計算
+#                     mask_indices = np.where(mask != 0)
+#                     height = int(np.max(mask_indices[0]) - np.min(mask_indices[0]))  # 高さの計算
+
+#                     # 高さをリストに追加
+#                     mask_heights.append(height)
+#                     removed_result_tomato.append(r)  # しきい値を超えるトマトの結果を追加
+        
+#         return removed_result_tomato, mask_heights
+    
+#     def draw_ripe_tomato_angle(self, image, tomato_dict):
+#         for tomato in tomato_dict:
+#             # トマトが熟している場合（is_ripeがTrue）のみ処理を実行
+#             if tomato.get('is_ripe', False):
+#                 # 画像内座標
+#                 coord = tomato['image_coords']
+#                 x = coord[0]
+#                 y = coord[1]
+
+#                 # approach_ang に応じた L/F/R を決定
+#                 approach_ang = tomato['approach_ang']
+#                 if approach_ang == -1:
+#                     direction = "L"
+#                     text_position = (x - 50, y)  # トマト中心より左に描画
+#                 elif approach_ang == 0:
+#                     direction = "F"
+#                     text_position = (x - 25, y + 25)  # トマト中心より下に描画
+#                 elif approach_ang == 1:
+#                     direction = "R"
+#                     text_position = (x + 25, y)  # トマト中心より右に描画
+#                 else:
+#                     direction = "?"  # 万が一、-1/0/1以外の値があった場合
+#                     text_position = (x, y)  # デフォルトは中心に描画
+
+#                 # harvest_order を取得
+#                 harvest_order = tomato.get('harvest_order', "?")
+
+#                 # 描画する文字列を生成（例: L-1, F-2, R-3）
+#                 text = f"{direction}"
+
+#                 # 文字の色と太さなどを設定
+#                 font = cv2.FONT_HERSHEY_SIMPLEX
+#                 color = (0, 0, 0)  # 黒色
+#                 thickness = 2
+#                 font_scale = 0.7
+
+#                 # 文字を画像に描画
+#                 cv2.putText(image, text, text_position, font, font_scale, color, thickness, cv2.LINE_AA)
+#         return image
+
+
+#     def main_process(self, F_B):
+#         self.get_logger().info("main_process")
+        
+#         mode = 1
+#         tomato_pos_msg = TomatoPos()
+#         tomato_dict = []
+
+#         # 配信中の手先カメラの最新フレームを使用する。
+#         color_img,depth_img,depth_frame = self.get_latest_frame(
+#             'hand', self.realsense_hand)
+        
+
+#         if color_img is not None :
+#             self.save_image(color_img, "orig_img")
+#             # Rerinexフィルタ処理
+#             # TODO: Retinexフィルターのパラメータ設定
+#             if self.FILITER_TYPE == "non_filter":
+#                 self.get_logger().info('Retinexフィルタ: OFF')
+#                 filtered_img = color_img
+#             else:
+#                 filter, param = self.select_filter()
+#                 filtered_img = filter.retinex_filter(color_img, param)
+#             self.save_image(filtered_img, "filtered_img")
+            
+#             # 推論実行
+#             self.get_logger().info('推論実行')
+#             yolo_results = self.predict_extra.run_predict(filtered_img, conf= self.CONF_BASE_TH, iou= self.IOU_TH)
+            
+#             if yolo_results is not None:
+#                 results_tomato, tom_heights_by_pixel = self.remove_small_mask_and_get_tom_height(yolo_results) # 奥にあるトマトを認識した場合、マスク面積のしきい値処理で除外
+#                 proc_times, color_mask, mask_main_stem, mask_peduncle, mask_tomato = self.predict_extra.extraction_and_color_mask(results_tomato)
+#                 overlay_img = self.predict_extra.overlay_images(filtered_img, color_mask)
+#                 self.save_image(overlay_img, "overlay_img")
+#                 self.save_image(color_mask, "color_mask")
+                
+#                 if self.SHOW_RESULT_FLAG:
+#                     cv2.imshow('overlay_image', overlay_img)
+#                     cv2.waitKey(500)
+#                     cv2.destroyAllWindows()
+                
+#                 # 熟度判定
+#                 self.get_logger().info('熟度判定')
+#                 centers_of_ripe, centers_of_unripe, ripenesses, resuls_ripe_tom, tomato_dict = self.ripeness_judge.judge_ripeness(filtered_img, yolo_results, self.predict_extra.CONF_TOM, self.MIN_AREA_TH, tomato_dict)
+                
+#                 debug_tomato_dict = copy.deepcopy(tomato_dict)
+#                 print(f"熟度判定後: {json.dumps(debug_tomato_dict, indent=4, default=self.convert_to_serializable)}")
+#                 # print(f"熟度判定後: {tomato_dict}")
+                
+#                 self.get_logger().info(f"認識したトマトの熟度: \n{ripenesses}")
+#                 if len(centers_of_ripe) == 0:
+#                     self.get_logger().info(f"熟したトマトはありませんでした")
+#                     return tomato_pos_msg
+#                 self.get_logger().info(f"  → 結果(熟したトマトの中心座標): \n{centers_of_ripe}")
+                
+#                 # 手先進入角度算出処理
+#                 print('\n手先進入角度決定処理')
+#                 tom_pos_with_approach_angle, tomato_dict = self.angle_determiner.determine_angle(resuls_ripe_tom, mask_main_stem, mask_peduncle, mask_tomato, centers_of_ripe, tomato_dict)
+#                 print(f"  → 結果（[トマト中心座標] + [進入角度]）: \n{tom_pos_with_approach_angle}")
+#                 # print(f"角度決定後: {tomato_dict}")
+#                 # print(f"角度決定後: {json.dumps(tomato_dict, indent=4, default=self.convert_to_serializable)}")
+                
+#                 # トマトの座標を画像座標系からカメラ座標系に変換
+#                 print('\n座標変換（画像系 → カメラ系）処理')
+#                 tomato_3d_posi, tomato_dict = self.realsense_hand.imgpoint_to_3dpoint(
+#                     depth_frame, tom_pos_with_approach_angle, mode, tomato_dict)
+#                 print(f"  → 結果: \n{tomato_3d_posi}")
+                
+#                 # print(f"座標変換後: \n{json.dumps(tomato_dict, indent=4, default=self.convert_to_serializable)}")
+
+#                 # アーム座標に変換された、[トマトの3次元座標，手先進入角度]×熟したトマトの個数 の配列が返ってくる
+#                 print('\n座標変換（カメラ系 → アーム系）処理')
+#                 target_coordinates, tomato_dict = self.harvest_order.order_decision(tomato_3d_posi, tom_heights_by_pixel, tomato_dict)
+#                 print(f"  → 結果: \n{target_coordinates}")
+                
+#                 result_image = self.draw_ripe_tomato_angle(overlay_img, tomato_dict)
+#                 self.save_image(result_image, "result_image")
+
+#                 # 各処理の結果のリストを保存
+#                 self.save_result_data(tomato_dict)
+                
+#                 debug_tomato_dict = copy.deepcopy(tomato_dict)
+#                 print(f"最終結果: {json.dumps(debug_tomato_dict, indent=4, default=self.convert_to_serializable)}")
+
+#                 # メッセージ型に変換
+#                 tomato_pos_msg = self.create_tomatopos_msg(target_coordinates)
+#                 #tomato_pos_msg = target_coordinates # デバッグ用
+#                 return tomato_pos_msg
+#             else :
+#                 return tomato_pos_msg
+
+#     def create_tomatopos_msg(self,target_coordinates):
+#         tomato_pos_msg = TomatoPos()
+#         for target_coordinate in target_coordinates:
+#             tomato_data = TomatoData()
+#             tomato_data.x = int(target_coordinate[0])
+#             tomato_data.y = int(target_coordinate[1])
+#             tomato_data.z = int(target_coordinate[2])
+#             tomato_data.approach_direction = int(target_coordinate[3])
+#             tomato_pos_msg.tomato_data.append(tomato_data)
+#         return tomato_pos_msg
+
+#     def vision_host_server(self, request, response):
+#         if request.task == "detect_check" :
+#             if request.direction == "f":
+#                 forward_or_back = "f"
+#             elif request.direction == "b":
+#                 forward_or_back = "b"
+            
+#             # ロボット正面付近にトマトがあるかcheck
+#             self.get_logger().info('ロボット正面付近にトマトがあるかcheck')
+#             tom_pos, check_tomato = self.detect_check(forward_or_back)
+#             self.get_logger().info(f'check_tomato: {check_tomato}')
+#             print(f"tomato : {tom_pos}")
+#             if check_tomato == True:
+#                 self.get_logger().info('トマト発見！！！')
+#                 response.detect_check = True
+#                 response.target_pos = tom_pos
+#             elif check_tomato == False:
+#                 self.get_logger().info('トマトは無いみたい・・・。')
+#                 response.detect_check = False
+#             else:
+#                 self.get_logger().info('認識器の問題でトマトを認識できませんでした')
+#                 response.detect_check = False
+        
+#         else :
+#             forward_or_back = str(request.direction)
+#             target_coordinates = self.main_process(forward_or_back)
+#             self.get_logger().info(f'target_coordinates: {target_coordinates}')
+#             response.target_pos = target_coordinates
+#             response.detect_check = True
+        
+#         return response
+
+# def main():
+#     rclpy.init() 
+#     node=Vision_Service() 
+#     try :
+#         rclpy.spin(node)       
+#     except KeyboardInterrupt :
+#         print("\nCtrl+C has been typed")
+#     finally:
+#         sys.stdout = sys.__stdout__
+#         node.release_realsense()
+#         node.destroy_node()
+
+
+# if __name__ == "__main__":
+#     main()
+
+# # !/usr/bin/env python
+# # -*- coding: utf-8 -*-
+
+# # !/usr/bin/env python
+# # -*- coding: utf-8 -*-
+
+# !/usr/bin/env python
+# -*- coding: utf-8 -*-
+# !/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# import sys
+# import os
+# from datetime import datetime
+# import yaml
+
+# # ros2_library
+# import rclpy
+# from rclpy.node import Node
+# # rclpy.qos から qos_profile_services_default をインポート
+# from rclpy.qos import qos_profile_services_default, qos_profile_sensor_data
+# from toms_msg.msg import TomatoPos,TomatoData
+# from toms_msg.srv import VisionService, DetectTomato
+# from sensor_msgs.msg import CompressedImage
+
+# # python library
+# import cv2
+# import numpy as np
+# import json
+# import csv
+# import copy
+
+# from ultralytics import YOLO
+
+# sys.path.append('/home/ylab/hibikino_toms_ws/src/vision_pkg/vision_pkg/modules')
+# from .modules.realsense_module_ipad import Realsense_Module
+# from .modules.ripeness_judge import Ripeness_Judge
+# from .modules.filter_tools import Filter_SSR, Filter_MSR, Filter_MSRCR
+# from .modules.harvest_order import Harvest_Order
+# from .modules.predict_extraction import Predict_Extra
+# from .modules.appro_angle_determiner import Approach_Angle_Determiner
+
+# """
+# @author yoshida keisuke, 吉永
+# -----------------------------------------
+# vision service node
+# 画像処理司令を受け取って,要求された情報を返すノード
+
+# 2025/1/20時点
+# TODO: Retinexフィルターの種類選択とパラメータ設定処理
+# TODO: yolo_toolsの実装 →YOLOの設定ファイル。動作開始直後の初回の認識時間を短縮できる。
+# TODO: 2段階収穫動作の処理実装
+# """
+
+# class Vision_Service(Node):  
+#     def __init__(self):
+#         super().__init__('vision_service') 
+
+#         #service
+#         self.vision_host_server_object = self.create_service(
+#             VisionService,
+#             "vision_service",
+#             self.vision_host_server,
+#             # QoSプロファイルを明示的に指定
+#             qos_profile=qos_profile_services_default)
+
+#         # iPadの十字位置を、配信中の俯瞰カメラのDepthで3次元化する。
+#         # DetectTomato型を再利用するため、VisionService.srvの変更は不要。
+#         self.manual_detect_server = self.create_service(
+#             DetectTomato,
+#             'vision_manual_detect',
+#             self.manual_detect_callback,
+#             qos_profile=qos_profile_services_default)
+#         self.manual_hand_detect_server = self.create_service(
+#             DetectTomato,
+#             'vision_manual_detect_hand',
+#             self.manual_hand_detect_callback,
+#             qos_profile=qos_profile_services_default)
+#         # UI表示用のカメラトピック。俯瞰・手先を別々に常時配信する。
+#         self.pub_hand = self.create_publisher(
+#             CompressedImage,
+#             '/camera/hand/image/compressed',
+#             qos_profile_sensor_data)
+#         self.pub_over = self.create_publisher(
+#             CompressedImage,
+#             '/camera/over/image/compressed',
+#             qos_profile_sensor_data)
+        
+#         # パラメータ設定用のyamlファイル
+#         yaml_path = '/home/ylab/hibikino_toms_ws/module/set_params.yaml'
+#         # YAMLファイルの読み込み
+
+#         # print文を無効化（ログの出力はされる）
+#         params = self.load_yaml(yaml_path)
+#         DEBUG = params["DEBUG"]
+#         if DEBUG:
+#             sys.stdout = open(os.devnull, 'w')
+#         else:
+#             sys.stdout = sys.__stdout__
+
+#         vision_params = params["vision_params"]
+#         camera_params = vision_params["camera_params"]
+        
+#         self.SHOW_RESULT_FLAG = vision_params["SHOW_RESULT"]
+#         self.FILITER_TYPE = vision_params["FILITER_TYPE"]
+        
+#         # 推論パラメータ
+#         WEIGHT_PATH = vision_params["WEIGHT_PATH"]     # 最終的に仕様する重みのパスを入力
+#         self.CONF_BASE_TH = vision_params["CONF_BASE_TH"]
+#         self.IOU_TH = vision_params["IOU_TH"]
+#         self.MIN_AREA_TH = vision_params["MIN_AREA_TH"]
+
+#         # データの保存先
+#         IMG_SAVE_DIR_PATH = vision_params["IMG_SAVE_DIR_PATH"]
+#         self.IMG_SAVE_DIL = self.create_output_directory(IMG_SAVE_DIR_PATH)
+#         RESULT_SAVE_DIR_PATH = vision_params["PROC_RESULT_SAVE_DIR_PATH"]
+#         self.RESULT_SAVE_DIL = self.create_output_directory(RESULT_SAVE_DIR_PATH)
+
+#         # 処理時のパラメータ
+#         self.APPROACH_ANG = vision_params["APPROACH_ANG"]
+
+#         #library
+        
+#         # カメラごとに独立したRealSenseインスタンスを持つ。
+#         # サービス要求のたびにsetup/stopせず、ノード終了まで起動状態を維持する。
+#         self.serial_hand = "230322272057"
+#         self.serial_over = "827312071693"
+#         self.realsense_hand = Realsense_Module(copy.deepcopy(camera_params))
+#         self.realsense_over = Realsense_Module(copy.deepcopy(camera_params))
+#         self.harvest_order = Harvest_Order(vision_params)
+#         self.ripeness_judge = Ripeness_Judge(vision_params)
+#         self.predict_extra = Predict_Extra(vision_params)
+#         self.angle_determiner = Approach_Angle_Determiner(camera_params)
+
+#         self.latest_frames = {
+#             'hand': None,
+#             'over': None,
+#         }
+#         self.STREAM_FPS = 15.0
+#         self.JPEG_QUALITY = 70
+
+#         try:
+#             self.realsense_hand.setup(self.serial_hand)
+#             self.get_logger().info('手先カメラ起動完了')
+#             self.realsense_over.setup(self.serial_over)
+#             self.get_logger().info('俯瞰カメラ起動完了')
+#         except Exception:
+#             self.release_realsense()
+#             raise
+
+#         self.timer_hand = self.create_timer(
+#             1.0 / self.STREAM_FPS,
+#             self.streaming_loop_hand)
+#         self.timer_over = self.create_timer(
+#             1.0 / self.STREAM_FPS,
+#             self.streaming_loop_over)
+#         self.get_logger().info('ビジョンサーバ起動')
+    
+#     @staticmethod
+#     def load_yaml(file_path):
+#         """YAMLファイルを読み込むヘルパー関数"""
+#         try:
+#             with open(file_path, "r") as file:
+#                 return yaml.safe_load(file)
+#         except FileNotFoundError:
+#             raise FileNotFoundError(f"YAMLファイルが見つかりません: {file_path}")
+#         except yaml.YAMLError as e:
+#             raise ValueError(f"YAMLファイルの解析エラー: {e}")
+    
+#     @staticmethod
+#     def convert_to_serializable(obj):
+#         if obj is None:  # None をそのまま返す
+#             return None
+#         if isinstance(obj, np.ndarray):
+#             return obj.tolist()  # NumPy配列をリストに変換
+#         if isinstance(obj, (np.float32, np.float64)): 
+#             return float(obj)  # NumPyのfloatをPythonのfloatに変換
+#         if isinstance(obj, (np.int32, np.int64)): 
+#             return int(obj)  # NumPyのintをPythonのintに変換
+#         raise TypeError(f"Type {type(obj)} not serializable")
+
+#     def streaming_loop_hand(self):
+#         self.publish_camera_image(
+#             'hand',
+#             self.realsense_hand,
+#             self.pub_hand,
+#             'camera_hand_color_optical_frame')
+
+#     def streaming_loop_over(self):
+#         self.publish_camera_image(
+#             'over',
+#             self.realsense_over,
+#             self.pub_over,
+#             'camera_over_color_optical_frame')
+
+#     def publish_camera_image(self, camera_key, realsense, publisher, frame_id):
+#         """最新フレームを保存し、UI用のJPEG画像を配信する。"""
+#         try:
+#             color_img, depth_img, depth_frame = realsense.get_image(False)
+#             if color_img is None:
+#                 return
+
+#             # 認識サービスでは、ここで取得済みの最新RGB・Depthを再利用する。
+#             self.latest_frames[camera_key] = (
+#                 color_img,
+#                 depth_img,
+#                 depth_frame)
+
+#             encode_params = [
+#                 int(cv2.IMWRITE_JPEG_QUALITY),
+#                 self.JPEG_QUALITY]
+#             success, encoded = cv2.imencode(
+#                 '.jpg', color_img, encode_params)
+#             if not success:
+#                 return
+
+#             msg = CompressedImage()
+#             msg.header.stamp = self.get_clock().now().to_msg()
+#             msg.header.frame_id = frame_id
+#             msg.format = 'jpeg'
+#             msg.data = encoded.tobytes()
+#             publisher.publish(msg)
+#         except Exception as error:
+#             self.get_logger().warning(
+#                 f'{camera_key} camera streaming error: {error!r}')
+
+#     def get_latest_frame(self, camera_key, realsense):
+#         """配信済みの最新フレームを返し、未取得時だけ直接撮影する。"""
+#         frame = self.latest_frames[camera_key]
+#         if frame is None:
+#             frame = realsense.get_image(self.SHOW_RESULT_FLAG)
+#             self.latest_frames[camera_key] = frame
+#         return frame
+
+#     @staticmethod
+#     def _nearest_valid_depth_pixel(depth_frame, pixel_x, pixel_y, width, height):
+#         """十字周辺から、深度が取れる最も近いピクセルを探す。"""
+#         for radius in range(0, 6):
+#             candidates = []
+#             for dy in range(-radius, radius + 1):
+#                 for dx in range(-radius, radius + 1):
+#                     if radius and max(abs(dx), abs(dy)) != radius:
+#                         continue
+#                     x = pixel_x + dx
+#                     y = pixel_y + dy
+#                     if not (0 <= x < width and 0 <= y < height):
+#                         continue
+#                     distance = float(depth_frame.get_distance(x, y))
+#                     if np.isfinite(distance) and distance > 0.0:
+#                         candidates.append((distance, x, y))
+#             if candidates:
+#                 # 同じ半径なら中央値に近い値を採用し、外れ値の影響を抑える。
+#                 candidates.sort(key=lambda item: item[0])
+#                 return candidates[len(candidates) // 2]
+#         return None
+
+#     def manual_detect_callback(self, request, response):
+#         """配信中の俯瞰画像の十字位置を、既存方式で3次元座標へ変換する。"""
+#         response.found = False
+#         response.candidate_count = 0
+#         response.x = []
+#         response.y = []
+#         response.z = []
+
+#         try:
+#             frame = self.get_latest_frame('over', self.realsense_over)
+#             if frame is None or len(frame) != 3:
+#                 raise RuntimeError('俯瞰カメラの最新フレームがありません')
+
+#             color_img, _depth_img, depth_frame = frame
+#             if color_img is None or depth_frame is None:
+#                 raise RuntimeError('俯瞰カメラのカラーまたはDepthがありません')
+
+#             height, width = color_img.shape[:2]
+#             pixel_x = int(request.pixel_x)
+#             pixel_y = int(request.pixel_y)
+#             if not (0 <= pixel_x < width and 0 <= pixel_y < height):
+#                 raise ValueError(
+#                     f'ピクセル({pixel_x},{pixel_y})は画像{width}x{height}の範囲外です')
+
+#             valid = self._nearest_valid_depth_pixel(
+#                 depth_frame, pixel_x, pixel_y, width, height)
+#             if valid is None:
+#                 raise RuntimeError('十字周辺で有効な深度を取得できません')
+#             distance, sample_x, sample_y = valid
+
+#             # mode=0は既存detect_checkと同じ俯瞰カメラ用変換経路。
+#             image_points = [[sample_x, sample_y, 0, 0]]
+#             converted, _ = self.realsense_over.imgpoint_to_3dpoint(
+#                 depth_frame, image_points, 0, [])
+#             if converted is None or len(converted) == 0:
+#                 raise RuntimeError('画像座標から3次元座標へ変換できませんでした')
+
+#             point = converted[0]
+#             if len(point) < 3:
+#                 raise RuntimeError(f'変換結果の要素数が不足しています: {point!r}')
+#             x, y, z = float(point[0]), float(point[1]), float(point[2])
+#             if not all(np.isfinite(value) for value in (x, y, z)):
+#                 raise RuntimeError(f'変換結果に不正値があります: {point!r}')
+
+#             response.found = True
+#             response.candidate_count = 1
+#             response.x = [x]
+#             response.y = [y]
+#             response.z = [z]
+#             response.message = (
+#                 f'俯瞰Depth変換成功 pixel=({pixel_x},{pixel_y}) '
+#                 f'sample=({sample_x},{sample_y}) depth={distance:.3f}m '
+#                 f'xyz=({x:.1f},{y:.1f},{z:.1f})')
+#             self.get_logger().info(f'[MANUAL DETECT] {response.message}')
+#         except Exception as error:
+#             response.message = f'俯瞰Depth変換失敗: {type(error).__name__}: {error}'
+#             self.get_logger().error(f'[MANUAL DETECT] {response.message}')
+
+#         return response
+
+#     def manual_hand_detect_callback(self, request, response):
+#         """手先映像の十字位置を既存の校正処理でアーム座標へ変換する。"""
+#         response.found = False
+#         response.candidate_count = 0
+#         response.x = []
+#         response.y = []
+#         response.z = []
+
+#         try:
+#             frame = self.get_latest_frame('hand', self.realsense_hand)
+#             if frame is None or len(frame) != 3:
+#                 raise RuntimeError('手先カメラの最新フレームがありません')
+
+#             color_img, _depth_img, depth_frame = frame
+#             if color_img is None or depth_frame is None:
+#                 raise RuntimeError('手先カメラのカラーまたはDepthがありません')
+
+#             height, width = color_img.shape[:2]
+#             pixel_x = int(request.pixel_x)
+#             pixel_y = int(request.pixel_y)
+#             if not (0 <= pixel_x < width and 0 <= pixel_y < height):
+#                 raise ValueError(
+#                     f'ピクセル({pixel_x},{pixel_y})は画像{width}x{height}の範囲外です')
+
+#             valid = self._nearest_valid_depth_pixel(
+#                 depth_frame, pixel_x, pixel_y, width, height)
+#             if valid is None:
+#                 raise RuntimeError('十字周辺で有効な深度を取得できません')
+#             distance, sample_x, sample_y = valid
+
+#             image_points = [[sample_x, sample_y, 0, 0]]
+#             tomato_dict = [{
+#                 'id': 0,
+#                 'is_ripe': True,
+#                 'image_coords': [sample_x, sample_y],
+#                 'approach_ang': 0,
+#             }]
+#             camera_points, tomato_dict = self.realsense_hand.imgpoint_to_3dpoint(
+#                 depth_frame, image_points, 1, tomato_dict)
+#             if camera_points is None or len(camera_points) == 0:
+#                 raise RuntimeError('手先画像をカメラ3次元座標へ変換できませんでした')
+
+#             # 既存の手先カメラ→アーム座標変換をそのまま利用する。
+#             # 手動指定ではマスクがないため、果実高さは従来の仮値80pxを使う。
+#             arm_points, _ = self.harvest_order.order_decision(
+#                 camera_points, [80.0], tomato_dict)
+#             if arm_points is None or len(arm_points) == 0:
+#                 raise RuntimeError('カメラ座標をアーム座標へ変換できませんでした')
+
+#             point = arm_points[0]
+#             if len(point) < 3:
+#                 raise RuntimeError(f'アーム座標の要素数が不足しています: {point!r}')
+#             x, y, z = float(point[0]), float(point[1]), float(point[2])
+#             if not all(np.isfinite(value) for value in (x, y, z)):
+#                 raise RuntimeError(f'アーム座標に不正値があります: {point!r}')
+
+#             response.found = True
+#             response.candidate_count = 1
+#             response.x = [x]
+#             response.y = [y]
+#             response.z = [z]
+#             response.message = (
+#                 f'手先Depth変換成功 pixel=({pixel_x},{pixel_y}) '
+#                 f'sample=({sample_x},{sample_y}) depth={distance:.3f}m '
+#                 f'arm=({x:.1f},{y:.1f},{z:.1f})')
+#             self.get_logger().info(f'[MANUAL HAND] {response.message}')
+#         except Exception as error:
+#             response.message = f'手先Depth変換失敗: {type(error).__name__}: {error}'
+#             self.get_logger().error(f'[MANUAL HAND] {response.message}')
+
+#         return response
+
+#     def release_realsense(self):
+#         """ノード終了時に両方のカメラを停止する。"""
+#         for camera_name, realsense in (
+#                 ('hand', getattr(self, 'realsense_hand', None)),
+#                 ('over', getattr(self, 'realsense_over', None))):
+#             if realsense is None:
+#                 continue
+#             try:
+#                 realsense.stop()
+#             except Exception as error:
+#                 self.get_logger().warning(
+#                     f'{camera_name} camera stop error: {error!r}')
+
+#     def create_output_directory(self, IMG_SAVE_DIR_PATH):
+#         # 実行時の日付でディレクトリ名を作成
+#         date_str = datetime.now().strftime("%Y_%m_%d")
+#         directory_path = os.path.join(IMG_SAVE_DIR_PATH, date_str)
+
+#         # ディレクトリが存在しなければ作成
+#         os.makedirs(directory_path, exist_ok=True)
+#         return directory_path
+    
+#     def save_image(self, image, prefix="image"):
+#         # 実行時の時間でファイル名を生成
+#         self.time_str = datetime.now().strftime("%H-%M-%S")
+#         file_name = f"{self.time_str}_{prefix}.jpg"
+#         file_path = os.path.join(self.IMG_SAVE_DIL, file_name)
+
+#         # OpenCVを使用して画像を保存
+#         cv2.imwrite(file_path, image)
+#         return file_path
+    
+
+#     def save_result_data(self, data):
+#         # 実行時の時間でファイル名を生成
+#         file_name = f"{self.time_str}_result.csv"
+#         file_path = os.path.join(self.RESULT_SAVE_DIL, file_name)
+#         # データをフラット化
+#         flat_data = [self.flatten_json(item) for item in data]
+#         empty_data =[]
+        
+#         # CSVのヘッダー（最初の行）としてキーを取得
+#         if len(data) == 0:
+#             keys = ["id","conf","image_coords","ripeness","is_ripe","approach_ang","camera_coords","arm_coords","harvest_order"]  # 空のデータに対応するデフォルトのキー
+#             empty_data = []
+#         else:
+#             keys = flat_data[0].keys()
+#             empty_data = data
+        
+#         with open(file_path, 'w', newline='', encoding='utf-8') as f:
+#             writer = csv.DictWriter(f, fieldnames=keys)
+#             writer.writeheader()  # ヘッダーを記録
+#             if len(empty_data) > 0:
+#                 writer.writerows(empty_data)  # 空でない場合はデータを記録
+#             # print(f"データをCSVとして保存しました: {file_path}")
+#         return file_path
+    
+#     def flatten_json(self, nested_json):
+#         """ネストされたJSONを平坦化"""
+#         flat_dict = {}
+        
+#         def flatten(item, name=''):
+#             if type(item) is dict:
+#                 for key in item:
+#                     flatten(item[key], name + key + '_')
+#             else:
+#                 flat_dict[name[:-1]] = item
+            
+#         flatten(nested_json)
+#         return flat_dict
+
+#     def detect_check(self, F_or_B):
+
+#         self.get_logger().info("detect_check")
+#         check = None
+#         harvestable_tom_pos = []
+#         tom_3d_pos = []
+#         # 俯瞰カメラによる撮影で画像を取得する
+#         color_img,depth_img,depth_frame = self.get_latest_frame(
+#             'over', self.realsense_over)
+
+#         if color_img is not None :
+#             harvestable_tom_pos = self.predict_extra.check_predict(F_or_B, color_img, conf= self.CONF_BASE_TH, iou= self.IOU_TH)
+#             if harvestable_tom_pos is not None and len(harvestable_tom_pos) != 0:
+#                 print("トマトがロボットの前付近に存在します")
+#                 mode = 0 # detect_check
+#                 empty_dict = []
+#                 tom_3d_pos, _ = self.realsense_over.imgpoint_to_3dpoint(
+#                     depth_frame, harvestable_tom_pos, mode, empty_dict)
+#                 check = True
+#             else:
+#                 print("トマトは無いようです。。。")
+#                 check = False
+#         print(f"tom_3d_pos: {tom_3d_pos}")
+#         if tom_3d_pos is not None:
+#             tom_pos_msg = self.create_tomatopos_msg(tom_3d_pos)
+
+#         return tom_pos_msg, check
+
+#     def select_filter(self):
+#         match self.FILITER_TYPE:
+#             case "ssr":
+#                 print("Filter type is SSR")
+#                 filter = Filter_SSR()
+#                 param = [] # 任意のパラメータを設定
+#             case "msr":
+#                 print("Filter type is MSR")
+#                 filter = Filter_MSR()
+#                 param = [] # 任意のパラメータを設定
+#             case "msrcr":
+#                 print("Filter type is MSRCR")
+#                 filter = Filter_MSRCR()
+#                 param = [] # 任意のパラメータを設定
+        
+#         return filter, param
+    
+#     def remove_small_mask_and_get_tom_height(self, results):
+#         removed_result_tomato = []
+#         mask_heights = []
+        
+#         for r in results:
+#             masks = r.masks.data.cpu().numpy() if r.masks is not None else None
+#             if masks is None:
+#                 continue
+            
+#             for ci, mask in enumerate(masks):
+#                 label = r.names[r.boxes.cls.tolist()[ci]]  # トマトのラベルを取得
+#                 scores = r.boxes.conf.cpu().numpy()[ci]  # 各スコアを取得
+
+#                 if label == "tomato" and scores > self.predict_extra.CONF_TOM:
+#                     # 各マスクの面積を計算
+#                     mask_area = np.sum(mask != 0)  # 255以外のピクセルがトマト領域を示す
+#                     if mask_area < self.MIN_AREA_TH:  # 面積がしきい値以下なら無視
+#                         continue
+                    
+#                     # マスクの高さを計算
+#                     mask_indices = np.where(mask != 0)
+#                     height = int(np.max(mask_indices[0]) - np.min(mask_indices[0]))  # 高さの計算
+
+#                     # 高さをリストに追加
+#                     mask_heights.append(height)
+#                     removed_result_tomato.append(r)  # しきい値を超えるトマトの結果を追加
+        
+#         return removed_result_tomato, mask_heights
+    
+#     def draw_ripe_tomato_angle(self, image, tomato_dict):
+#         for tomato in tomato_dict:
+#             # トマトが熟している場合（is_ripeがTrue）のみ処理を実行
+#             if tomato.get('is_ripe', False):
+#                 # 画像内座標
+#                 coord = tomato['image_coords']
+#                 x = coord[0]
+#                 y = coord[1]
+
+#                 # approach_ang に応じた L/F/R を決定
+#                 approach_ang = tomato['approach_ang']
+#                 if approach_ang == -1:
+#                     direction = "L"
+#                     text_position = (x - 50, y)  # トマト中心より左に描画
+#                 elif approach_ang == 0:
+#                     direction = "F"
+#                     text_position = (x - 25, y + 25)  # トマト中心より下に描画
+#                 elif approach_ang == 1:
+#                     direction = "R"
+#                     text_position = (x + 25, y)  # トマト中心より右に描画
+#                 else:
+#                     direction = "?"  # 万が一、-1/0/1以外の値があった場合
+#                     text_position = (x, y)  # デフォルトは中心に描画
+
+#                 # harvest_order を取得
+#                 harvest_order = tomato.get('harvest_order', "?")
+
+#                 # 描画する文字列を生成（例: L-1, F-2, R-3）
+#                 text = f"{direction}"
+
+#                 # 文字の色と太さなどを設定
+#                 font = cv2.FONT_HERSHEY_SIMPLEX
+#                 color = (0, 0, 0)  # 黒色
+#                 thickness = 2
+#                 font_scale = 0.7
+
+#                 # 文字を画像に描画
+#                 cv2.putText(image, text, text_position, font, font_scale, color, thickness, cv2.LINE_AA)
+#         return image
+
+
+#     def main_process(self, F_B):
+#         self.get_logger().info("main_process")
+        
+#         mode = 1
+#         tomato_pos_msg = TomatoPos()
+#         tomato_dict = []
+
+#         # 配信中の手先カメラの最新フレームを使用する。
+#         color_img,depth_img,depth_frame = self.get_latest_frame(
+#             'hand', self.realsense_hand)
+        
+
+#         if color_img is not None :
+#             self.save_image(color_img, "orig_img")
+#             # Rerinexフィルタ処理
+#             # TODO: Retinexフィルターのパラメータ設定
+#             if self.FILITER_TYPE == "non_filter":
+#                 self.get_logger().info('Retinexフィルタ: OFF')
+#                 filtered_img = color_img
+#             else:
+#                 filter, param = self.select_filter()
+#                 filtered_img = filter.retinex_filter(color_img, param)
+#             self.save_image(filtered_img, "filtered_img")
+            
+#             # 推論実行
+#             self.get_logger().info('推論実行')
+#             yolo_results = self.predict_extra.run_predict(filtered_img, conf= self.CONF_BASE_TH, iou= self.IOU_TH)
+            
+#             if yolo_results is not None:
+#                 results_tomato, tom_heights_by_pixel = self.remove_small_mask_and_get_tom_height(yolo_results) # 奥にあるトマトを認識した場合、マスク面積のしきい値処理で除外
+#                 proc_times, color_mask, mask_main_stem, mask_peduncle, mask_tomato = self.predict_extra.extraction_and_color_mask(results_tomato)
+#                 overlay_img = self.predict_extra.overlay_images(filtered_img, color_mask)
+#                 self.save_image(overlay_img, "overlay_img")
+#                 self.save_image(color_mask, "color_mask")
+                
+#                 if self.SHOW_RESULT_FLAG:
+#                     cv2.imshow('overlay_image', overlay_img)
+#                     cv2.waitKey(500)
+#                     cv2.destroyAllWindows()
+                
+#                 # 熟度判定
+#                 self.get_logger().info('熟度判定')
+#                 centers_of_ripe, centers_of_unripe, ripenesses, resuls_ripe_tom, tomato_dict = self.ripeness_judge.judge_ripeness(filtered_img, yolo_results, self.predict_extra.CONF_TOM, self.MIN_AREA_TH, tomato_dict)
+                
+#                 debug_tomato_dict = copy.deepcopy(tomato_dict)
+#                 print(f"熟度判定後: {json.dumps(debug_tomato_dict, indent=4, default=self.convert_to_serializable)}")
+#                 # print(f"熟度判定後: {tomato_dict}")
+                
+#                 self.get_logger().info(f"認識したトマトの熟度: \n{ripenesses}")
+#                 if len(centers_of_ripe) == 0:
+#                     self.get_logger().info(f"熟したトマトはありませんでした")
+#                     return tomato_pos_msg
+#                 self.get_logger().info(f"  → 結果(熟したトマトの中心座標): \n{centers_of_ripe}")
+                
+#                 # 手先進入角度算出処理
+#                 print('\n手先進入角度決定処理')
+#                 tom_pos_with_approach_angle, tomato_dict = self.angle_determiner.determine_angle(resuls_ripe_tom, mask_main_stem, mask_peduncle, mask_tomato, centers_of_ripe, tomato_dict)
+#                 print(f"  → 結果（[トマト中心座標] + [進入角度]）: \n{tom_pos_with_approach_angle}")
+#                 # print(f"角度決定後: {tomato_dict}")
+#                 # print(f"角度決定後: {json.dumps(tomato_dict, indent=4, default=self.convert_to_serializable)}")
+                
+#                 # トマトの座標を画像座標系からカメラ座標系に変換
+#                 print('\n座標変換（画像系 → カメラ系）処理')
+#                 tomato_3d_posi, tomato_dict = self.realsense_hand.imgpoint_to_3dpoint(
+#                     depth_frame, tom_pos_with_approach_angle, mode, tomato_dict)
+#                 print(f"  → 結果: \n{tomato_3d_posi}")
+                
+#                 # print(f"座標変換後: \n{json.dumps(tomato_dict, indent=4, default=self.convert_to_serializable)}")
+
+#                 # アーム座標に変換された、[トマトの3次元座標，手先進入角度]×熟したトマトの個数 の配列が返ってくる
+#                 print('\n座標変換（カメラ系 → アーム系）処理')
+#                 target_coordinates, tomato_dict = self.harvest_order.order_decision(tomato_3d_posi, tom_heights_by_pixel, tomato_dict)
+#                 print(f"  → 結果: \n{target_coordinates}")
+                
+#                 result_image = self.draw_ripe_tomato_angle(overlay_img, tomato_dict)
+#                 self.save_image(result_image, "result_image")
+
+#                 # 各処理の結果のリストを保存
+#                 self.save_result_data(tomato_dict)
+                
+#                 debug_tomato_dict = copy.deepcopy(tomato_dict)
+#                 print(f"最終結果: {json.dumps(debug_tomato_dict, indent=4, default=self.convert_to_serializable)}")
+
+#                 # メッセージ型に変換
+#                 tomato_pos_msg = self.create_tomatopos_msg(target_coordinates)
+#                 #tomato_pos_msg = target_coordinates # デバッグ用
+#                 return tomato_pos_msg
+#             else :
+#                 return tomato_pos_msg
+
+#     def create_tomatopos_msg(self,target_coordinates):
+#         tomato_pos_msg = TomatoPos()
+#         for target_coordinate in target_coordinates:
+#             tomato_data = TomatoData()
+#             tomato_data.x = int(target_coordinate[0])
+#             tomato_data.y = int(target_coordinate[1])
+#             tomato_data.z = int(target_coordinate[2])
+#             tomato_data.approach_direction = int(target_coordinate[3])
+#             tomato_pos_msg.tomato_data.append(tomato_data)
+#         return tomato_pos_msg
+
+#     def vision_host_server(self, request, response):
+#         if request.task == "detect_check" :
+#             if request.direction == "f":
+#                 forward_or_back = "f"
+#             elif request.direction == "b":
+#                 forward_or_back = "b"
+            
+#             # ロボット正面付近にトマトがあるかcheck
+#             self.get_logger().info('ロボット正面付近にトマトがあるかcheck')
+#             tom_pos, check_tomato = self.detect_check(forward_or_back)
+#             self.get_logger().info(f'check_tomato: {check_tomato}')
+#             print(f"tomato : {tom_pos}")
+#             if check_tomato == True:
+#                 self.get_logger().info('トマト発見！！！')
+#                 response.detect_check = True
+#                 response.target_pos = tom_pos
+#             elif check_tomato == False:
+#                 self.get_logger().info('トマトは無いみたい・・・。')
+#                 response.detect_check = False
+#             else:
+#                 self.get_logger().info('認識器の問題でトマトを認識できませんでした')
+#                 response.detect_check = False
+        
+#         else :
+#             forward_or_back = str(request.direction)
+#             target_coordinates = self.main_process(forward_or_back)
+#             self.get_logger().info(f'target_coordinates: {target_coordinates}')
+#             response.target_pos = target_coordinates
+#             response.detect_check = True
+        
+#         return response
+
+# def main():
+#     rclpy.init() 
+#     node=Vision_Service() 
+#     try :
+#         rclpy.spin(node)       
+#     except KeyboardInterrupt :
+#         print("\nCtrl+C has been typed")
+#     finally:
+#         sys.stdout = sys.__stdout__
+#         node.release_realsense()
+#         node.destroy_node()
+
+
+# if __name__ == "__main__":
+#     main()
+
+
+
+
+
+
+
+
+
+
+# !/usr/bin/env python
+# -*- coding: utf-8 -*-
 import sys
 import os
 from datetime import datetime
@@ -10,12 +1790,15 @@ import yaml
 import rclpy
 from rclpy.node import Node
 # rclpy.qos から qos_profile_services_default をインポート
-from rclpy.qos import qos_profile_services_default
+from rclpy.qos import qos_profile_services_default, qos_profile_sensor_data
 from toms_msg.msg import TomatoPos,TomatoData
-from toms_msg.srv import VisionService
+from toms_msg.srv import VisionService, DetectTomato
+from sensor_msgs.msg import CompressedImage
 
 # python library
 import cv2
+import math
+import pyrealsense2 as rs
 import numpy as np
 import json
 import csv
@@ -54,6 +1837,28 @@ class Vision_Service(Node):
             self.vision_host_server,
             # QoSプロファイルを明示的に指定
             qos_profile=qos_profile_services_default)
+
+        # iPadの十字位置を、配信中の俯瞰カメラのDepthで3次元化する。
+        # DetectTomato型を再利用するため、VisionService.srvの変更は不要。
+        self.manual_detect_server = self.create_service(
+            DetectTomato,
+            'vision_manual_detect',
+            self.manual_detect_callback,
+            qos_profile=qos_profile_services_default)
+        self.manual_hand_detect_server = self.create_service(
+            DetectTomato,
+            'vision_manual_detect_hand',
+            self.manual_hand_detect_callback,
+            qos_profile=qos_profile_services_default)
+        # UI表示用のカメラトピック。俯瞰・手先を別々に常時配信する。
+        self.pub_hand = self.create_publisher(
+            CompressedImage,
+            '/camera/hand/image/compressed',
+            qos_profile_sensor_data)
+        self.pub_over = self.create_publisher(
+            CompressedImage,
+            '/camera/over/image/compressed',
+            qos_profile_sensor_data)
         
         # パラメータ設定用のyamlファイル
         yaml_path = '/home/ylab/hibikino_toms_ws/module/set_params.yaml'
@@ -68,6 +1873,22 @@ class Vision_Service(Node):
             sys.stdout = sys.__stdout__
 
         vision_params = params["vision_params"]
+        manual_params = params.get('manual_target_params', {})
+        self.MANUAL_FIXED_DEPTH_MM = float(
+            manual_params.get('FIXED_DEPTH_MM', 300.0))
+        if (not math.isfinite(self.MANUAL_FIXED_DEPTH_MM)
+                or self.MANUAL_FIXED_DEPTH_MM <= 0):
+            raise ValueError('manual_target_params.FIXED_DEPTH_MM must be finite and positive')
+        self.MANUAL_OFFSET_X_MM = float(manual_params.get('OFFSET_X_MM', 0.0))
+        self.MANUAL_OFFSET_Z_MM = float(manual_params.get('OFFSET_Z_MM', 0.0))
+        if not all(math.isfinite(value) for value in (
+                self.MANUAL_OFFSET_X_MM, self.MANUAL_OFFSET_Z_MM)):
+            raise ValueError('manual_target_params.OFFSET_X_MM/OFFSET_Z_MM must be finite')
+        self.get_logger().info(
+            f'[MANUAL TARGET CONFIG] yaml={yaml_path} '
+            f'depth={self.MANUAL_FIXED_DEPTH_MM:.1f}mm '
+            f'offset_x={self.MANUAL_OFFSET_X_MM:+.1f}mm '
+            f'offset_z={self.MANUAL_OFFSET_Z_MM:+.1f}mm')
         camera_params = vision_params["camera_params"]
         
         self.SHOW_RESULT_FLAG = vision_params["SHOW_RESULT"]
@@ -90,11 +1911,39 @@ class Vision_Service(Node):
 
         #library
         
-        self.realsense = Realsense_Module(camera_params)
+        # カメラごとに独立したRealSenseインスタンスを持つ。
+        # サービス要求のたびにsetup/stopせず、ノード終了まで起動状態を維持する。
+        self.serial_hand = "230322272057"
+        self.serial_over = "827312071693"
+        self.realsense_hand = Realsense_Module(copy.deepcopy(camera_params))
+        self.realsense_over = Realsense_Module(copy.deepcopy(camera_params))
         self.harvest_order = Harvest_Order(vision_params)
         self.ripeness_judge = Ripeness_Judge(vision_params)
         self.predict_extra = Predict_Extra(vision_params)
         self.angle_determiner = Approach_Angle_Determiner(camera_params)
+
+        self.latest_frames = {
+            'hand': None,
+            'over': None,
+        }
+        self.STREAM_FPS = 15.0
+        self.JPEG_QUALITY = 70
+
+        try:
+            self.realsense_hand.setup(self.serial_hand)
+            self.get_logger().info('手先カメラ起動完了')
+            self.realsense_over.setup(self.serial_over)
+            self.get_logger().info('俯瞰カメラ起動完了')
+        except Exception:
+            self.release_realsense()
+            raise
+
+        self.timer_hand = self.create_timer(
+            1.0 / self.STREAM_FPS,
+            self.streaming_loop_hand)
+        self.timer_over = self.create_timer(
+            1.0 / self.STREAM_FPS,
+            self.streaming_loop_over)
         self.get_logger().info('ビジョンサーバ起動')
     
     @staticmethod
@@ -120,20 +1969,220 @@ class Vision_Service(Node):
             return int(obj)  # NumPyのintをPythonのintに変換
         raise TypeError(f"Type {type(obj)} not serializable")
 
-    def ensure_realsense(self, serial_no : str):
-        """
-        必要になったときだけRealSenseを開く
-        
-        """
-        # realsenseが開いていない or stopしたあとならここで開く
-        self.realsense.setup(serial_no)
-    
+    def streaming_loop_hand(self):
+        self.publish_camera_image(
+            'hand',
+            self.realsense_hand,
+            self.pub_hand,
+            'camera_hand_color_optical_frame')
+
+    def streaming_loop_over(self):
+        self.publish_camera_image(
+            'over',
+            self.realsense_over,
+            self.pub_over,
+            'camera_over_color_optical_frame')
+
+    def publish_camera_image(self, camera_key, realsense, publisher, frame_id):
+        """最新フレームを保存し、UI用のJPEG画像を配信する。"""
+        try:
+            color_img, depth_img, depth_frame = realsense.get_image(False)
+            if color_img is None:
+                return
+
+            # 認識サービスでは、ここで取得済みの最新RGB・Depthを再利用する。
+            self.latest_frames[camera_key] = (
+                color_img,
+                depth_img,
+                depth_frame)
+
+            encode_params = [
+                int(cv2.IMWRITE_JPEG_QUALITY),
+                self.JPEG_QUALITY]
+            success, encoded = cv2.imencode(
+                '.jpg', color_img, encode_params)
+            if not success:
+                return
+
+            msg = CompressedImage()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = frame_id
+            msg.format = 'jpeg'
+            msg.data = encoded.tobytes()
+            publisher.publish(msg)
+        except Exception as error:
+            self.get_logger().warning(
+                f'{camera_key} camera streaming error: {error!r}')
+
+    def get_latest_frame(self, camera_key, realsense):
+        """配信済みの最新フレームを返し、未取得時だけ直接撮影する。"""
+        frame = self.latest_frames[camera_key]
+        if frame is None:
+            frame = realsense.get_image(self.SHOW_RESULT_FLAG)
+            self.latest_frames[camera_key] = frame
+        return frame
+
+    @staticmethod
+    def _nearest_valid_depth_pixel(depth_frame, pixel_x, pixel_y, width, height):
+        """十字周辺から、深度が取れる最も近いピクセルを探す。"""
+        for radius in range(0, 6):
+            candidates = []
+            for dy in range(-radius, radius + 1):
+                for dx in range(-radius, radius + 1):
+                    if radius and max(abs(dx), abs(dy)) != radius:
+                        continue
+                    x = pixel_x + dx
+                    y = pixel_y + dy
+                    if not (0 <= x < width and 0 <= y < height):
+                        continue
+                    distance = float(depth_frame.get_distance(x, y))
+                    if np.isfinite(distance) and distance > 0.0:
+                        candidates.append((distance, x, y))
+            if candidates:
+                # 同じ半径なら中央値に近い値を採用し、外れ値の影響を抑える。
+                candidates.sort(key=lambda item: item[0])
+                return candidates[len(candidates) // 2]
+        return None
+
+    def manual_detect_callback(self, request, response):
+        """配信中の俯瞰画像の十字位置を、既存方式で3次元座標へ変換する。"""
+        response.found = False
+        response.candidate_count = 0
+        response.x = []
+        response.y = []
+        response.z = []
+
+        try:
+            frame = self.get_latest_frame('over', self.realsense_over)
+            if frame is None or len(frame) != 3:
+                raise RuntimeError('俯瞰カメラの最新フレームがありません')
+
+            color_img, _depth_img, depth_frame = frame
+            if color_img is None or depth_frame is None:
+                raise RuntimeError('俯瞰カメラのカラーまたはDepthがありません')
+
+            height, width = color_img.shape[:2]
+            pixel_x = int(request.pixel_x)
+            pixel_y = int(request.pixel_y)
+            if not (0 <= pixel_x < width and 0 <= pixel_y < height):
+                raise ValueError(
+                    f'ピクセル({pixel_x},{pixel_y})は画像{width}x{height}の範囲外です')
+
+            valid = self._nearest_valid_depth_pixel(
+                depth_frame, pixel_x, pixel_y, width, height)
+            if valid is None:
+                raise RuntimeError('十字周辺で有効な深度を取得できません')
+            distance, sample_x, sample_y = valid
+
+            # mode=0は既存detect_checkと同じ俯瞰カメラ用変換経路。
+            image_points = [[sample_x, sample_y, 0, 0]]
+            converted, _ = self.realsense_over.imgpoint_to_3dpoint(
+                depth_frame, image_points, 0, [])
+            if converted is None or len(converted) == 0:
+                raise RuntimeError('画像座標から3次元座標へ変換できませんでした')
+
+            point = converted[0]
+            if len(point) < 3:
+                raise RuntimeError(f'変換結果の要素数が不足しています: {point!r}')
+            x, y, z = float(point[0]), float(point[1]), float(point[2])
+            if not all(np.isfinite(value) for value in (x, y, z)):
+                raise RuntimeError(f'変換結果に不正値があります: {point!r}')
+
+            response.found = True
+            response.candidate_count = 1
+            response.x = [x]
+            response.y = [y]
+            response.z = [z]
+            response.message = (
+                f'俯瞰Depth変換成功 pixel=({pixel_x},{pixel_y}) '
+                f'sample=({sample_x},{sample_y}) depth={distance:.3f}m '
+                f'xyz=({x:.1f},{y:.1f},{z:.1f})')
+            self.get_logger().info(f'[MANUAL DETECT] {response.message}')
+        except Exception as error:
+            response.message = f'俯瞰Depth変換失敗: {type(error).__name__}: {error}'
+            self.get_logger().error(f'[MANUAL DETECT] {response.message}')
+
+        return response
+
+    def manual_hand_detect_callback(self, request, response):
+        """Use selected hand-camera pixel and configured fixed depth; no object detection."""
+        response.found = False
+        response.candidate_count = 0
+        response.x = []
+        response.y = []
+        response.z = []
+        try:
+            frame = self.get_latest_frame('hand', self.realsense_hand)
+            if frame is None or len(frame) != 3:
+                raise RuntimeError('手先カメラの最新フレームがありません')
+            color_img, _depth_img, _depth_frame = frame
+            if color_img is None:
+                raise RuntimeError('手先カメラのカラー画像がありません')
+            height, width = color_img.shape[:2]
+            pixel_x, pixel_y = int(request.pixel_x), int(request.pixel_y)
+            if not (0 <= pixel_x < width and 0 <= pixel_y < height):
+                raise ValueError(
+                    f'ピクセル({pixel_x},{pixel_y})は画像{width}x{height}の範囲外です')
+
+            intrinsics = self.realsense_hand.color_intrinsics
+            if intrinsics is None:
+                raise RuntimeError('手先カメラの内部パラメータがありません')
+            depth_m = self.MANUAL_FIXED_DEPTH_MM / 1000.0
+            camera_m = rs.rs2_deproject_pixel_to_point(
+                intrinsics, [float(pixel_x), float(pixel_y)], depth_m)
+            camera_mm = [float(axis) * 1000.0 for axis in camera_m]
+            tomato_dict = [{
+                'id': 0,
+                'is_ripe': True,
+                'image_coords': [pixel_x, pixel_y],
+                'approach_ang': 0,
+            }]
+            # Existing transform applies camera mounting and camera-to-arm offsets.
+            # No fruit-height estimate is available or used in this manual workflow.
+            camera_point = [camera_mm[0], camera_mm[1], camera_mm[2], 0.0]
+            arm_points, _ = self.harvest_order.order_decision(
+                [camera_point], [0.0], tomato_dict)
+            if arm_points is None or len(arm_points) == 0:
+                raise RuntimeError('固定奥行きからアーム座標を計算できませんでした')
+            point = arm_points[0]
+            # Apply iPad calibration in arm coordinates; Y is the depth axis.
+            x = float(point[0]) + self.MANUAL_OFFSET_X_MM
+            y = float(point[1])
+            z = float(point[2]) + self.MANUAL_OFFSET_Z_MM
+            if not all(math.isfinite(value) for value in (x, y, z)):
+                raise RuntimeError(f'変換結果に不正値があります: {point!r}')
+
+            response.found = True
+            response.candidate_count = 1
+            response.x = [x]
+            response.y = [y]
+            response.z = [z]
+            response.message = (
+                f'固定奥行き変換成功 pixel=({pixel_x},{pixel_y}) '
+                f'depth={self.MANUAL_FIXED_DEPTH_MM:.0f}mm '
+                f'camera=({camera_mm[0]:.1f},{camera_mm[1]:.1f},{camera_mm[2]:.1f})mm '
+                f'arm_before=({point[0]:.1f},{point[1]:.1f},{point[2]:.1f})mm '
+                f'offset_x={self.MANUAL_OFFSET_X_MM:+.1f}mm '
+                f'offset_z={self.MANUAL_OFFSET_Z_MM:+.1f}mm '
+                f'arm=({x:.1f},{y:.1f},{z:.1f})mm')
+            self.get_logger().info(f'[FIXED DEPTH HAND] {response.message}')
+        except Exception as error:
+            response.message = f'固定奥行き座標変換失敗: {type(error).__name__}: {error}'
+            self.get_logger().error(f'[FIXED DEPTH HAND] {response.message}')
+        return response
+
     def release_realsense(self):
-        """
-        処理が終わったら手放す(ストリーミングに譲る)場合に呼ぶ
-        """
-        if self.realsense is not None:
-            self.realsense.stop()
+        """ノード終了時に両方のカメラを停止する。"""
+        for camera_name, realsense in (
+                ('hand', getattr(self, 'realsense_hand', None)),
+                ('over', getattr(self, 'realsense_over', None))):
+            if realsense is None:
+                continue
+            try:
+                realsense.stop()
+            except Exception as error:
+                self.get_logger().warning(
+                    f'{camera_name} camera stop error: {error!r}')
 
     def create_output_directory(self, IMG_SAVE_DIR_PATH):
         # 実行時の日付でディレクトリ名を作成
@@ -195,16 +2244,13 @@ class Vision_Service(Node):
 
     def detect_check(self, F_or_B):
 
-        # self.realsense.setup("827312071693") # D435(俯瞰カメラ)のID: realsense-viewerで確認
-        
-        self.ensure_realsense("827312071693")
-
         self.get_logger().info("detect_check")
         check = None
         harvestable_tom_pos = []
         tom_3d_pos = []
         # 俯瞰カメラによる撮影で画像を取得する
-        color_img,depth_img,depth_frame = self.realsense.get_image(self.SHOW_RESULT_FLAG)
+        color_img,depth_img,depth_frame = self.get_latest_frame(
+            'over', self.realsense_over)
 
         if color_img is not None :
             harvestable_tom_pos = self.predict_extra.check_predict(F_or_B, color_img, conf= self.CONF_BASE_TH, iou= self.IOU_TH)
@@ -212,7 +2258,8 @@ class Vision_Service(Node):
                 print("トマトがロボットの前付近に存在します")
                 mode = 0 # detect_check
                 empty_dict = []
-                tom_3d_pos, _ = self.realsense.imgpoint_to_3dpoint(depth_frame, harvestable_tom_pos, mode, empty_dict)
+                tom_3d_pos, _ = self.realsense_over.imgpoint_to_3dpoint(
+                    depth_frame, harvestable_tom_pos, mode, empty_dict)
                 check = True
             else:
                 print("トマトは無いようです。。。")
@@ -220,9 +2267,6 @@ class Vision_Service(Node):
         print(f"tom_3d_pos: {tom_3d_pos}")
         if tom_3d_pos is not None:
             tom_pos_msg = self.create_tomatopos_msg(tom_3d_pos)
-
-        # 使い終わったら開放しておく
-        self.release_realsense()
 
         return tom_pos_msg, check
 
@@ -320,10 +2364,9 @@ class Vision_Service(Node):
         tomato_pos_msg = TomatoPos()
         tomato_dict = []
 
-        # 画像取得
-        # self.realsense.setup("230322272057") # 手先カメラ
-        self.ensure_realsense("230322272057")
-        color_img,depth_img,depth_frame = self.realsense.get_image(self.SHOW_RESULT_FLAG)
+        # 配信中の手先カメラの最新フレームを使用する。
+        color_img,depth_img,depth_frame = self.get_latest_frame(
+            'hand', self.realsense_hand)
         
 
         if color_img is not None :
@@ -365,7 +2408,6 @@ class Vision_Service(Node):
                 self.get_logger().info(f"認識したトマトの熟度: \n{ripenesses}")
                 if len(centers_of_ripe) == 0:
                     self.get_logger().info(f"熟したトマトはありませんでした")
-                    self.release_realsense()
                     return tomato_pos_msg
                 self.get_logger().info(f"  → 結果(熟したトマトの中心座標): \n{centers_of_ripe}")
                 
@@ -378,7 +2420,8 @@ class Vision_Service(Node):
                 
                 # トマトの座標を画像座標系からカメラ座標系に変換
                 print('\n座標変換（画像系 → カメラ系）処理')
-                tomato_3d_posi, tomato_dict = self.realsense.imgpoint_to_3dpoint(depth_frame, tom_pos_with_approach_angle, mode, tomato_dict)
+                tomato_3d_posi, tomato_dict = self.realsense_hand.imgpoint_to_3dpoint(
+                    depth_frame, tom_pos_with_approach_angle, mode, tomato_dict)
                 print(f"  → 結果: \n{tomato_3d_posi}")
                 
                 # print(f"座標変換後: \n{json.dumps(tomato_dict, indent=4, default=self.convert_to_serializable)}")
@@ -400,10 +2443,8 @@ class Vision_Service(Node):
                 # メッセージ型に変換
                 tomato_pos_msg = self.create_tomatopos_msg(target_coordinates)
                 #tomato_pos_msg = target_coordinates # デバッグ用
-                self.release_realsense()
                 return tomato_pos_msg
             else :
-                self.release_realsense()
                 return tomato_pos_msg
 
     def create_tomatopos_msg(self,target_coordinates):
@@ -458,8 +2499,14 @@ def main():
         print("\nCtrl+C has been typed")
     finally:
         sys.stdout = sys.__stdout__
+        node.release_realsense()
         node.destroy_node()
 
 
 if __name__ == "__main__":
     main()
+
+
+
+
+

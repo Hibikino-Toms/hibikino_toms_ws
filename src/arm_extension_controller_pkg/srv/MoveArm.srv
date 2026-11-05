@@ -1,0 +1,11 @@
+# command: move / home / zero / stop
+# move: relative distance in mm. Positive extends (R), negative retracts (F).
+# home: retract (F) until the NC home switch opens, then set position to 0 mm.
+string command
+float64 distance_mm
+---
+bool success
+bool position_valid
+float64 actual_distance_mm
+float64 position_mm
+string message
