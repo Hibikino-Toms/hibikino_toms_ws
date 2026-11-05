@@ -1,2 +1,0 @@
-# Pico 2 / RP2350 ROM BOOTSEL USB access for members of plugdev.
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2e8a", ATTR{idProduct}=="000f", MODE="0660", GROUP="plugdev"

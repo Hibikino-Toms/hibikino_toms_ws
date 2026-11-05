@@ -9,12 +9,9 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
-        ('share/' + package_name, ['package.xml', 'README_xy_tracking_ja.md']),
-        ('share/' + package_name + '/config', [
-            'config/xy_robot_config.yaml', 'config/xy_tracking_params.yaml']),
-        ('share/' + package_name + '/launch', ['launch/xy_circle_demo.launch.py']),
+        ('share/' + package_name, ['package.xml']),
     ],
-    install_requires=['setuptools', 'numpy', 'PyYAML'],
+    install_requires=['setuptools'],
     zip_safe=True,
     maintainer='yasukawa_lab',
     maintainer_email='yasukawa_lab@todo.todo',
@@ -31,11 +28,7 @@ setup(
         'arm_controller_teleop = arm_controller_pkg.arm_controller_teleop:main',
         'arm_controller_teleop2 = arm_controller_pkg.arm_controller_teleop2:main',
         'arm_controller_teleop_angle = arm_controller_pkg.arm_controller_teleop_angle:main',
-        'arm_controller_keycontrol = arm_controller_pkg.arm_controller_keycontrol:main',
         'z_axis_controller_module = arm_controller_pkg.modules.z_axis_controller_module:main',
-        'arm_controller_continuous = arm_controller_pkg.arm_controller_continuous:main',
-        'arm_xy_tracker = arm_controller_pkg.arm_controller_xy_tracker:main',
-        'arm_xy_circle_demo = arm_controller_pkg.xy_circle_demo:main',
         ],
     },
 )

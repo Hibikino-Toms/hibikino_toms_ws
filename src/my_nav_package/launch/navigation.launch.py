@@ -15,7 +15,7 @@ def generate_launch_description():
     map_file_arg = DeclareLaunchArgument(
         'map',
         # default_value=os.path.join(pkg_share, 'maps', 'maps.yaml'),
-        default_value='/home/ylab/hibikino_toms_ws/src/my_nav_package/maps/maps_20261008.yaml',
+        default_value='/home/ylab/hibikino_toms_ws/src/my_nav_package/maps/maps.yaml',
         description='Full path to map file to load')
 
     params_file_arg = DeclareLaunchArgument(

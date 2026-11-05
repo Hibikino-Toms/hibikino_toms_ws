@@ -3,7 +3,7 @@ import numpy as np
 import os
 import sys
 
-from .predict_extraction import Predict_Extra
+from predict_extraction import Predict_Extra
 
 """
 2024/11/10 時点

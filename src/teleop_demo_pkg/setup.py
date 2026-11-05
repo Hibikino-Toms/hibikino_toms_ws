@@ -25,7 +25,6 @@ setup(
     entry_points={
         'console_scripts': [
             'teleop_demo = teleop_demo_pkg.teleop_demo:main',
-            'teleop_demo_codex = teleop_demo_pkg.teleop_demo_codex:main',
             'teleop_demo2 = teleop_demo_pkg.teleop_demo2:main',
             'end_motion = teleop_demo_pkg.end_motion:main',
             'teleop_demo_angle = teleop_demo_pkg.teleop_demo_angle:main',
@@ -35,8 +34,6 @@ setup(
             'teleop_automation = teleop_demo_pkg.teleop_automation:main',
             'teleop_demo_launch = teleop_demo_pkg.teleop_demo_launch:main',
             'crawler_automation = teleop_demo_pkg.crawler_automation:main',
-            'crawler_automation_2 = teleop_demo_pkg.crawler_automation_2:main',
-            'visual_servo_approach_test = teleop_demo_pkg.visual_servo_approach_test:main',
         ],
     },
 )

@@ -6,8 +6,8 @@ def generate_launch_description():
         # ros2 run teleop_demo_pkg teleop_demo2
         Node(
             package='teleop_demo_pkg',
-            executable='teleop_demo_codex',
-            name='teleop_demo_codex',
+            executable='teleop_demo',
+            name='teleop_demo',
             output='screen'
         ),
         # ros2 run joy joy_node
@@ -25,18 +25,18 @@ def generate_launch_description():
             output='screen'
         ),
         # ros2 run end_effector_pkg end_effector_teleop
-        # Node(
-        #     package='end_effector_pkg',
-        #     executable='end_effector_teleop',
-        #     name='end_effector_teleop',
-        #     output='screen'
-        # ),
+        Node(
+            package='end_effector_pkg',
+            executable='end_effector_teleop',
+            name='end_effector_teleop',
+            output='screen'
+        ),
 
-        # # ros2 run cart_controller_pkg rail_teleop
-        # Node(
-        #     package='cart_controller_pkg',
-        #     executable='rail_teleop',
-        #     name='rail_teleop',
-        #     output='screen'
-        # ),
+        # ros2 run cart_controller_pkg rail_teleop
+        Node(
+            package='cart_controller_pkg',
+            executable='rail_teleop',
+            name='rail_teleop',
+            output='screen'
+        ),
     ])

@@ -7,7 +7,6 @@ import time
 import numpy as np
 from toms_msg.srv import ArmService, EndEffectorService
 
-
 class ArmClientNode(Node):
     def __init__(self):
         super().__init__('arm_client_node')

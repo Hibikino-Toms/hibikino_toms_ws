@@ -301,40 +301,63 @@ class HarvestGatewayNode(Node):
 
     def run_detect_phase(self):
         logger = self.get_logger()
-        logger.info("=== テスト実行: ビジョン処理をスキップし、指定座標へアームを動かします ===")
+        start_total = time.time() # 全体の計測開始
         
-        # 1. 衝突防止のため、アームとハンドを初期化 (安全対策)
-        self.arm_and_ee_send_request_init()
-        
-        # 2. ハードコードする目標座標を指定
-        # ※ 実機で安全に動かせる数値（ミリメートル等）を事前に確認して入力してください
-        from toms_msg.msg import TomatoData
-        mock_target = TomatoData()
-        mock_target.x = 300  # 例: 前方へ 300
-        mock_target.y = 0    # 例: 左右 0
-        mock_target.z = 400  # 例: 高さ 400
-        mock_target.approach_direction = 0 
+        # logger.info("=== [TIME] 1. arm_and_ee_send_request_init 開始 ===")
+        t0 = time.time()
+        # self.arm_and_ee_send_request_init()
+        # logger.info(f"=== [TIME] 1. 完了: {time.time() - t0:.3f} 秒 ===")
 
-        self.last_targets = [mock_target]
-        
-        # 高さ補正用のダミーデータを作成
-        class DummyPreH:
-            def __init__(self):
-                self.data = 0.0
-        
-        self.last_pre_arm_height = DummyPreH()
+        # 俯瞰カメラでトマトチェック
+        logger.info("=== [TIME] 2. 俯瞰カメラでの検出 (vision_send_request_check) 開始 ===")
+        t1 = time.time()
+        vis_res = self.vision_send_request_check()
+        logger.info(f"=== [TIME] 2. 完了: {time.time() - t1:.3f} 秒 ===")
 
-        # 3. ご要望の処理: 検出ボタンを押した段階で「いきなりアームをその座標へ動かす」
-        logger.info("指定された座標へアームを移動させています...")
-        self.arm_send_request_target(mock_target, self.last_pre_arm_height)
+        if vis_res is None or (not vis_res.detect_check):
+            return {
+                "found" : False,
+                "message" : "トマトが見つかりませんでした",
+                "targets" : [],
+                "pre_arm_height" : None
+            }
+        
+        # 俯瞰カメラで得た1個目を「狙うべき株」として仮決め
+        rough_target = vis_res.target_pos.tomato_data[0]
+
+        logger.info("=== [TIME] アーム移動の裏で手先カメラのウォームアップを開始 ===")
+        req = SetBool.Request()
+        req.data = True # True = 手先カメラ
+        self.cam_switch_client.call_async(req) # 非同期で呼び出す（返事を待たずにすぐ下に進む）
+
+        # 2. アームを移動させる
+        logger.info("=== [TIME] 3. アームの移動 (arm_send_request_home) 開始 ===")
+        t2 = time.time()
+        arm_home_res = self.arm_send_request_home(rough_target)
+        pre_arm_hight = arm_home_res.tom_hight
+        logger.info(f"=== [TIME] 3. 完了: {time.time() - t2:.3f} 秒 ===")
+
+        # 3. 手先カメラで詳細なトマト座標を得る
+        logger.info("=== [TIME] 4. 手先カメラでの検出 (vision_send_request_tompos) 開始 ===")
+        t3 = time.time()
+        close_res = self.vision_send_request_tompos()
+        logger.info(f"=== [TIME] 4. 完了: {time.time() - t3:.3f} 秒 ===")
+        
+        precise_targets = close_res.target_pos.tomato_data
+        
+        self.last_targets = precise_targets
+        self.last_pre_arm_height = pre_arm_hight
+
+        logger.info(f"=== [TIME] ★ 検出フェーズ全体の合計処理時間: {time.time() - start_total:.3f} 秒 ===")
 
         return {
             "found" : True,
-            "message" : "指定座標へのアーム移動テストが完了しました",
-            "targets" : self.last_targets,
-            "pre_arm_hight" : self.last_pre_arm_height,
+            "message" : "収穫候補を検出しました",
+            "targets" : precise_targets,
+            "pre_arm_hight" : pre_arm_hight,
         }
-
+    # "message" : f"{len(precise_targets)}個の収穫候補を検出しました",
+    
     def run_harvest_phase(self):
         logger = self.get_logger()
         flag = 0

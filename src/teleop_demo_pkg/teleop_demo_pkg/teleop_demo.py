@@ -41,11 +41,11 @@ class MasterControlNode(Node):
         # 専門家ノードへの接続を待つ
         while not self.arm_client.wait_for_service(timeout_sec=1.0): self.get_logger().info('アームサービスを待機中...')
         # ★★★ レールサービスの待機処理 ★★★
-        # while not self.rail_client.wait_for_service(timeout_sec=1.0): self.get_logger().info('レール制御サービスを待機中...')
+        while not self.rail_client.wait_for_service(timeout_sec=1.0): self.get_logger().info('レール制御サービスを待機中...')
         
-        # self.get_logger().info('エンドエフェクタドライバの接続を待っています...')
-        # while self.count_subscribers('end_effector_command') == 0:
-        #     time.sleep(0.5)
+        self.get_logger().info('エンドエフェクタドライバの接続を待っています...')
+        while self.count_subscribers('end_effector_command') == 0:
+            time.sleep(0.5)
         self.get_logger().info('全てのノードに接続しました。')
         
         # === 内部変数の初期化 ===

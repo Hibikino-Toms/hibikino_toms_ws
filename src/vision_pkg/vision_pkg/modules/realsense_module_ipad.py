@@ -84,9 +84,9 @@ class Realsense_Module():
         if self.pipe is None:
             raise RuntimeError("Realsense is not initialized. Call setup() first.")
         try :
-            # Read one frameset per call. Draining 30 frames here limited the
-            # 30 FPS camera to roughly one published frame per second.
-            frames = self.pipe.wait_for_frames()
+            #waiting for a frame
+            for i in range(30):
+                frames = self.pipe.wait_for_frames()
             #get_frame_data
             aligned_frames = self.align.process(frames)
             color_frame = aligned_frames.get_color_frame()

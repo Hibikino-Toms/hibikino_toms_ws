@@ -21,7 +21,6 @@ setup(
     entry_points={
         'console_scripts': [
             'crawler_controller_serial = crawler_robot_pkg.crawler_controller_serial:main',
-            'crawler_control_vel = crawler_robot_pkg.crawler_control_vel:main',
         ],
     },
 )

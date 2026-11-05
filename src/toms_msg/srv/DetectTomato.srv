@@ -1,7 +1,5 @@
 # HarvestTomato.srv
 # Request
-int32 pixel_x
-int32 pixel_y
 ---
 # Response
 bool found
