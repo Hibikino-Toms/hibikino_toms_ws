@@ -1,0 +1,50 @@
+auto_harvest:
+  serial_number: "A437E4B324D4447A" # module/set_params.yaml EE_PICO_SERIAL_NUMBER
+  baudrate: 115200
+  sensor_timeout_sec: 0.8
+  sensor_stable_samples: 4
+  # Max-min span over the latest 4 Pico samples (200 ms per sample).
+  # Chosen to accept the stationary hand-held variation in the 2026-10-14 log.
+  home_stability_tolerance: {pot1: 35, pot2: 50, pot3: 30, enc4: 1}
+  target_stable_samples: 3
+  target_tolerance:
+    pot1: 70
+    pot2: 70
+    pot3: 70
+    enc4: 4
+  sensor_limits:
+    pot1: [360, 3200]
+    pot2: [2700, 3930]
+    pot3: [1400, 3650]
+    enc4: [-50, 0]
+  initial_pose:
+    pot1: 1800
+    pot2: 3900
+    pot3: 1550
+    enc4: 0
+  harvest_pose:
+    pot2: 3150
+    enc4: -45
+    pot3: 3550
+  # Sensor increase per positive PWM. The 2026-10-14 auto run showed M2 +180
+  # decreasing POT2 by 56 counts, so M2 uses -1 until a fresh direction check.
+  increase_pwm_sign: {pot1: -1, pot2: -1, pot3: -1, enc4: -1}
+  pwm:
+    # Values are independently adjustable per sensor/axis (pot1=M1, etc.).
+    min: {pot1: 80, pot2: 180, pot3: 180, enc4: 140}
+    max: {pot1: 100, pot2: 220, pot3: 220, enc4: 200}
+    max_total_abs_pwm: 540
+    slow_band: {pot1: 180, pot2: 180, pot3: 180, enc4: 8}
+  stage_timeout_sec: 20.0
+  progress_timeout_sec: 20.0
+  arm_return_timeout_sec: 70.0
+  arm_startup_timeout_sec: 120.0
+  progress_min_delta: {pot1: 3, pot2: 3, pot3: 3, enc4: 1}
+  progress_wrong_direction_tolerance: 2
+  heartbeat_period_sec: 0.1
+  serial_watchdog_sec: 0.6
+  control_rate_hz: 25.0
+  # There is no EE encoder limit switch. Real mode waits for c after manual
+  # confirmation that the rail is physically at its retracted reference.
+  require_manual_encoder_home_confirmation: true
+  simulated_counts_per_sec: 900.0

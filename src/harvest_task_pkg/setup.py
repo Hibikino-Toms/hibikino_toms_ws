@@ -37,6 +37,7 @@ setup(
             # ★ 2025/11/1に以下を追記(demo.pyを中継ノードとしたサービス通信のサーバー)
             'ipad_demo_relay = harvest_task_pkg.ipad_demo_relay:main',
             'ipad_demo_sync_relay = harvest_task_pkg.ipad_demo_sync_relay:main',
+            'ipad_demo_sync_relay_eetest = harvest_task_pkg.ipad_demo_sync_relay_eetest:main',
             # ★ 2026/5/12に追加　高速化のため手先アーム移動中にカメラ切り替えを呼び出し
             'ipad_demo_sync_relay_rev2 = harvest_task_pkg.ipad_demo_sync_relay_rev2:main',
         ],

@@ -1,0 +1,17 @@
+/**:
+  ros__parameters:
+    control_rate_hz: 10.0
+    goal_topic: /arm_xy/goal
+    frame_id: arm_base
+    goal_timeout_sec: 0.5
+    stamp_max_age_sec: 2.0
+    stamp_future_tolerance_sec: 0.2
+    max_goal_xy_m: 1.0
+    plane_z_m: 0.0
+    max_joint_velocity_rad_s: 0.25
+    max_joint_acceleration_rad_s2: 0.8
+    tracking_position_tolerance_m: 0.00001
+    tracking_angle_tolerance_rad: 0.0001
+    max_following_error_rad: 0.15
+    config_file: ""
+    control_conflict_services: ["/arm_service", "/arm_service_d435"]
