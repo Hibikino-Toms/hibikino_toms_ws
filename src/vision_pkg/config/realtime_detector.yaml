@@ -24,7 +24,7 @@ target:
   goal_topic: "/arm_xy/goal"
   frame_id: "arm_base"
   fixed_z_m: 0.0
-  # Arm startup reference pose: demo_joints_deg [5, 160, -65] gives yaw=100 deg.
+  # Arm startup reference pose: demo_joints_deg [5, 150.4, -55.4] gives yaw=100 deg.
   # At this pose, camera optical forward is defined as arm_base +Y.
   camera_reference_yaw_deg: 100.0
   actual_max_age_sec: 0.25

@@ -3,10 +3,10 @@ backend: sim
 initial_joints_deg: [9.38866738, 93.87929147, -38.57742594]
 startup:
   # module/set_params.yaml DXL_HOME_ANGLE [95,260,105] minus [90,90,180].
-  home_joints_deg: [5.0, 170.0, -75.0]
-  # Open q2 by 10 degrees, compensate q3 to retain the legacy 100 degree yaw.
-  # The default 50 mm circle passes IK from here; the folded home does not.
-  demo_joints_deg: [5.0, 160.0, -65.0]
+  home_joints_deg: [5.0, 150.4, -55.4]
+  # Keep q1=5 deg and yaw=100 deg, while placing the q3 axis about 200 mm
+  # radially from the base in the configured tracking-start posture.
+  demo_joints_deg: [5.0, 150.4, -55.4]
   minimum_segment_duration_sec: 3.0
   segment_timeout_sec: 60.0
   arrival_tolerance_rad: 0.017453292519943295

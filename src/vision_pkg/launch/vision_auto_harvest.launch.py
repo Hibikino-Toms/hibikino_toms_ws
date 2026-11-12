@@ -17,13 +17,11 @@ def nodes(context):
     if synthetic and backend != 'sim':
         raise RuntimeError('synthetic_camera is allowed only with backend:=sim')
     ee_backend = 'sim' if backend == 'sim' else 'serial'
-    ee_share = Path(get_package_share_directory('end_effector_pkg'))
     vision_share = Path(get_package_share_directory('vision_pkg'))
     ee_node = Node(
         package='end_effector_pkg', executable='auto_harvest', name='auto_harvest',
         output='screen', emulate_tty=True,
         parameters=[{
-            'config_file': str(ee_share/'config/auto_harvest.yaml'),
             'backend': ee_backend,
             'keyboard_enabled': True,
             'auto_confirm_sim_home': True,

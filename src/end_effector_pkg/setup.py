@@ -9,8 +9,8 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
-        ('share/' + package_name, ['package.xml', 'README_auto_harvest_ja.md']),
-        ('share/' + package_name + '/config', ['config/auto_harvest.yaml']),
+        ('share/' + package_name, ['package.xml', 'README_auto_harvest_ja.md',
+                                  'README_auto_harvest_legacy_202610.md']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

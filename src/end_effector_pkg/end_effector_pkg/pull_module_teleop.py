@@ -32,6 +32,7 @@ class PullModuleTeleop(Node):
         self.declare_parameter('serial_number', ee_params['EE_PICO_SERIAL_NUMBER'])
         self.declare_parameter('baudrate', ee_params.get('BAUDRATE', 115200))
         self.declare_parameter('motor_pwm', 180)
+        self.declare_parameter('servo_pwm', 180)
         self.declare_parameter('harvest_link_enabled', False)
         self.declare_parameter('simulate_hardware', False)
         self.declare_parameter('keyboard_enabled', True)
@@ -54,6 +55,7 @@ class PullModuleTeleop(Node):
         serial_number = str(self.get_parameter('serial_number').value)
         baudrate = int(self.get_parameter('baudrate').value)
         self.motor_pwm = max(1, min(255, int(self.get_parameter('motor_pwm').value)))
+        self.servo_pwm = max(1, min(255, int(self.get_parameter('servo_pwm').value)))
 
         self.serial_port = None
         device = 'SIMULATED EE (no USB)'
@@ -106,8 +108,12 @@ class PullModuleTeleop(Node):
         if self.harvest_link:
             print('収穫: h=アーム保持, r=引き戻し→初期姿勢, n=次の接近。Space/qはEE停止＋アーム保持', flush=True)
             print('w/s: アーム状態に関係なくEEを操作します。', flush=True)
-        print(f'PWM: {self.motor_pwm} / 255', flush=True)
+        print(f'PWM: DCモーター={self.motor_pwm}, サーボ(M3)={self.servo_pwm} / 255', flush=True)
         print('センサー値を200ms間隔で表示します。', flush=True)
+
+    def _selected_pwm(self):
+        # With the current Pico firmware, physical M3 is the hook servo.
+        return self.servo_pwm if self.selected_motor == 3 else self.motor_pwm
 
     def _send(self, command):
         if self.serial_port is not None:
@@ -185,11 +191,13 @@ class PullModuleTeleop(Node):
             self.selected_motor = int(key)
             print(f'選択: モーター{self.selected_motor}', flush=True)
         elif key == 'w':
-            self._move_ee(f'M{self.selected_motor},{self.motor_pwm}')
-            print(f'モーター{self.selected_motor}: 正転 PWM={self.motor_pwm}', flush=True)
+            pwm = self._selected_pwm()
+            self._move_ee(f'M{self.selected_motor},{pwm}')
+            print(f'モーター{self.selected_motor}: 正転 PWM={pwm}', flush=True)
         elif key == 's':
-            self._move_ee(f'M{self.selected_motor},{-self.motor_pwm}')
-            print(f'モーター{self.selected_motor}: 逆転 PWM={self.motor_pwm}', flush=True)
+            pwm = self._selected_pwm()
+            self._move_ee(f'M{self.selected_motor},{-pwm}')
+            print(f'モーター{self.selected_motor}: 逆転 PWM={pwm}', flush=True)
         elif key.lower() in ('h', 'r', 'n'):
             self._send('STOP')
             self._request_action({'h': 'hold', 'r': 'pull', 'n': 'resume'}[key.lower()])

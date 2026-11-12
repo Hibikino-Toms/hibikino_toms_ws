@@ -20,8 +20,8 @@ from std_msgs.msg import String
 from end_effector_pkg.auto_harvest_node import AutoHarvestNode
 
 ROOT = Path(__file__).resolve().parents[3]
-OUT = ROOT/'src/vision_pkg/validation'
-OUT.mkdir(exist_ok=True)
+OUT = ROOT/'src/end_effector_pkg/validation/limit_homing_20261112'
+OUT.mkdir(parents=True, exist_ok=True)
 processes = []
 streams = []
 
@@ -35,7 +35,14 @@ def start(args, label):
     return proc
 
 
-rclpy.init(args=['--ros-args', '-p', 'config_file:='+str(ROOT/'src/end_effector_pkg/config/auto_harvest.yaml'),
+ee_temp = tempfile.TemporaryDirectory(prefix='ee-limit-sim-config-')
+ee_config = yaml.safe_load((ROOT/'module/set_params.yaml').read_text())
+# Synthetic endpoints for this simulation only; never install them as calibration.
+ee_config['auto_harvest']['hook_servo'].update(
+    calibration_valid=True, open_feedback=1000, closed_feedback=3000)
+ee_path = Path(ee_temp.name)/'ee.yaml'
+ee_path.write_text(yaml.safe_dump(ee_config))
+rclpy.init(args=['--ros-args', '-p', 'config_file:='+str(ee_path),
                  '-p', 'backend:=sim', '-p', 'keyboard_enabled:=false',
                  '-p', 'auto_confirm_sim_home:=true'])
 auto = AutoHarvestNode()
@@ -62,6 +69,8 @@ def until(predicate, label, timeout=40.):
         spin(.02)
         if predicate():
             return
+        if auto.state == auto.FAULT:
+            raise AssertionError(f'EE fault during {label}: {auto.reason}')
         if any(proc.poll() is not None for proc in processes):
             raise AssertionError(f'process exited during {label}')
     raise AssertionError(f'timeout waiting for {label}; auto={auto.state}/{auto.reason}; '
@@ -98,7 +107,7 @@ try:
         for cycle in range(2):
             until(lambda: auto.state == auto.WAIT_NEXT, f'cycle {cycle+1} complete', 55.)
             cycle_sensor_records.append(dict(auto.telemetry))
-            for name in ('pot1', 'pot2', 'pot3', 'enc4'):
+            for name in auto.active_axes:
                 target = int(auto.settings['initial_pose'][name])
                 tolerance = int(auto.settings['target_tolerance'][name])
                 assert abs(auto.telemetry[name]-target) <= tolerance, (name, auto.telemetry[name], target)
@@ -111,7 +120,10 @@ try:
             if not transitions or transitions[-1] != item['state']:
                 transitions.append(item['state'])
         report = dict(cycles=2, transitions=transitions,
-                      ee_sensor_feedback=True, parallel_initial_pose_reset=True,
+                      ee_sensor_feedback=True, fitted_axes=list(auto.active_axes),
+                      automatic_nc_limit_homing=auto.homing_verified,
+                      test_only_servo_feedback=[1000, 3000],
+                      physical_servo_calibration=False,
                       arm_waited_for_ee_ready=True, arrival_reason_and_hold_ready=True,
                       arm_return_acknowledged=True, n_required_between_cycles=True,
                       final_ee_sensors=cycle_sensor_records[-1],
@@ -137,3 +149,4 @@ finally:
                 proc.wait(timeout=3)
     for stream in streams:
         stream.close()
+    ee_temp.cleanup()

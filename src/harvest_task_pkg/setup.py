@@ -11,7 +11,7 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
-        ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name, ['package.xml', 'README_ipad_hand_only_ja.md']),
         
         # ★ 以下を追記 (launchディレクトリ内の .launch.py ファイルを登録)
         (os.path.join('share', package_name, 'launch'), 

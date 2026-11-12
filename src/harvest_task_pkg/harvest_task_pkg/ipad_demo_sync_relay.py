@@ -2150,7 +2150,7 @@ class HarvestGatewayNode(Node):
             callback_group=self._client_group)
         self.get_logger().info(f'[{VERSION}] loaded from {Path(__file__).resolve()}')
         self.get_logger().info(
-            'YOLOと俯瞰位置合わせを使わず、手先十字のDepth座標へ直接移動します。')
+            'YOLOと俯瞰位置合わせを使わず、手先十字と設定した固定奥行きから座標を求めます。')
 
     def _clear_targets(self):
         self.last_targets = []
@@ -2345,7 +2345,7 @@ class HarvestGatewayNode(Node):
                 'found': False,
                 'targets': [],
                 'message': (getattr(result, 'message', '')
-                            or '手先Depthから座標を取得できませんでした'),
+                            or '手先画像と設定した固定奥行きから座標を取得できませんでした'),
             }
 
         target = TomatoData()

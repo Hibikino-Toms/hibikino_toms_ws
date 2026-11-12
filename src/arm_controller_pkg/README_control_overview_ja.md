@@ -85,7 +85,7 @@ flowchart LR
 |---|---|
 | `backend` | `sim`。通常はlaunchの`backend:=...`で上書きします。 |
 | `startup.home_joints_deg` | `[5,170,-75]`度。configured起動の第1ウェイポイント。 |
-| `startup.demo_joints_deg` | `[5,160,-65]`度。configured起動後の追従開始姿勢。yawは100°です。 |
+| `startup.demo_joints_deg` | `[5,150.4,-55.4]`度。configured起動後の追従開始姿勢。yawは100°、モデル上の根元→q3軸距離は約200 mmです。 |
 | `startup.minimum_segment_duration_sec` | 3.0秒。初期姿勢間の最短移動時間。 |
 | `startup.segment_timeout_sec` | 60秒。各ウェイポイント到達の上限時間。 |
 | `startup.arrival_tolerance_rad` | 約1°。到達判定の関節許容差。 |
@@ -225,7 +225,7 @@ Launch引数:
 | `arrival_yaw_tolerance_rad` | 0.1 rad | 実測yawの到達許容値です。 |
 | `settle_sec` | 0.6 s | 条件が継続する必要がある時間です。 |
 
-`vision_auto_harvest.launch.py`はこれに加えてEE自動収穫ノードを起動します。EEのPWM・センサー・動作順設定は`end_effector_pkg/config/auto_harvest.yaml`と[end_effector_pkgの手順書](../end_effector_pkg/README_auto_harvest_ja.md)を参照してください。
+`vision_auto_harvest.launch.py`はこれに加えてEE自動収穫ノードを起動します。EEのPWM・センサー・動作順設定は`module/set_params.yaml`の`auto_harvest`と[end_effector_pkgの手順書](../end_effector_pkg/README_auto_harvest_ja.md)を参照してください。
 
 ## 8. 起動手順
 
@@ -298,7 +298,7 @@ ros2 topic echo /vision/servo_diagnostics
 | IK寸法、関節範囲、起動姿勢、CAN校正、Dynamixel設定、到達判定 | `arm_controller_pkg/config/xy_robot_config.yaml` |
 | 円半径・周期・中心・回転数 | `xy_circle_demo.launch.py`のLaunch引数。コード変更なしで起動時に指定できます。 |
 | カメラ、重み、画素目標、距離、サーボゲイン・速度、対象フィルター | `vision_pkg/config/realtime_detector.yaml` |
-| EE PWM・センサー目標・制限 | `end_effector_pkg/config/auto_harvest.yaml` |
+| EE PWM・センサー目標・制限 | `module/set_params.yaml`の`auto_harvest` |
 
 YAMLのソースを編集したら、コピーされているinstall側に古い設定が残らないよう関連パッケージを再ビルドして再sourceします。
 

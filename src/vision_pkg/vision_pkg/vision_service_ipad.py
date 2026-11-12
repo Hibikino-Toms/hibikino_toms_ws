@@ -1829,6 +1829,8 @@ TODO: 2段階収穫動作の処理実装
 class Vision_Service(Node):  
     def __init__(self):
         super().__init__('vision_service') 
+        self.declare_parameter('enable_over_camera', True)
+        self.enable_over_camera = bool(self.get_parameter('enable_over_camera').value)
 
         #service
         self.vision_host_server_object = self.create_service(
@@ -1855,10 +1857,9 @@ class Vision_Service(Node):
             CompressedImage,
             '/camera/hand/image/compressed',
             qos_profile_sensor_data)
-        self.pub_over = self.create_publisher(
-            CompressedImage,
-            '/camera/over/image/compressed',
-            qos_profile_sensor_data)
+        self.pub_over = (self.create_publisher(
+            CompressedImage, '/camera/over/image/compressed', qos_profile_sensor_data)
+            if self.enable_over_camera else None)
         
         # パラメータ設定用のyamlファイル
         yaml_path = '/home/ylab/hibikino_toms_ws/module/set_params.yaml'
@@ -1916,8 +1917,15 @@ class Vision_Service(Node):
         self.serial_hand = "230322272057"
         self.serial_over = "827312071693"
         self.realsense_hand = Realsense_Module(copy.deepcopy(camera_params))
-        self.realsense_over = Realsense_Module(copy.deepcopy(camera_params))
+        self.realsense_over = (Realsense_Module(copy.deepcopy(camera_params))
+                               if self.enable_over_camera else None)
         self.harvest_order = Harvest_Order(vision_params)
+        transform = self.harvest_order.transform_tools
+        self.get_logger().info(
+            f'[HAND TOOL TRANSFORM] cam2ee={transform.TRANSLATION_VECTOR_CAM2EE.tolist()}mm '
+            f'ee2arm={transform.TRANSLATION_VECTOR_EE2ARM.tolist()}mm '
+            f'camera_angle={params["coordinate_transform_params"]["CAM_ANGLE"]}deg '
+            f'Link4={params["ik_solver_params"]["Link4"]}mm; XYZ target=EE tool tip')
         self.ripeness_judge = Ripeness_Judge(vision_params)
         self.predict_extra = Predict_Extra(vision_params)
         self.angle_determiner = Approach_Angle_Determiner(camera_params)
@@ -1932,8 +1940,11 @@ class Vision_Service(Node):
         try:
             self.realsense_hand.setup(self.serial_hand)
             self.get_logger().info('手先カメラ起動完了')
-            self.realsense_over.setup(self.serial_over)
-            self.get_logger().info('俯瞰カメラ起動完了')
+            if self.enable_over_camera:
+                self.realsense_over.setup(self.serial_over)
+                self.get_logger().info('俯瞰カメラ起動完了')
+            else:
+                self.get_logger().info('手先カメラのみで起動（俯瞰カメラは無効）')
         except Exception:
             self.release_realsense()
             raise
@@ -1941,9 +1952,8 @@ class Vision_Service(Node):
         self.timer_hand = self.create_timer(
             1.0 / self.STREAM_FPS,
             self.streaming_loop_hand)
-        self.timer_over = self.create_timer(
-            1.0 / self.STREAM_FPS,
-            self.streaming_loop_over)
+        self.timer_over = (self.create_timer(1.0 / self.STREAM_FPS, self.streaming_loop_over)
+                           if self.enable_over_camera else None)
         self.get_logger().info('ビジョンサーバ起動')
     
     @staticmethod
@@ -2016,6 +2026,8 @@ class Vision_Service(Node):
 
     def get_latest_frame(self, camera_key, realsense):
         """配信済みの最新フレームを返し、未取得時だけ直接撮影する。"""
+        if realsense is None:
+            raise RuntimeError(f'{camera_key} camera is disabled')
         frame = self.latest_frames[camera_key]
         if frame is None:
             frame = realsense.get_image(self.SHOW_RESULT_FLAG)
@@ -2131,21 +2143,14 @@ class Vision_Service(Node):
             camera_m = rs.rs2_deproject_pixel_to_point(
                 intrinsics, [float(pixel_x), float(pixel_y)], depth_m)
             camera_mm = [float(axis) * 1000.0 for axis in camera_m]
-            tomato_dict = [{
-                'id': 0,
-                'is_ripe': True,
-                'image_coords': [pixel_x, pixel_y],
-                'approach_ang': 0,
-            }]
-            # Existing transform applies camera mounting and camera-to-arm offsets.
-            # No fruit-height estimate is available or used in this manual workflow.
-            camera_point = [camera_mm[0], camera_mm[1], camera_mm[2], 0.0]
-            arm_points, _ = self.harvest_order.order_decision(
-                [camera_point], [0.0], tomato_dict)
-            if arm_points is None or len(arm_points) == 0:
-                raise RuntimeError('固定奥行きからアーム座標を計算できませんでした')
-            point = arm_points[0]
-            # Apply iPad calibration in arm coordinates; Y is the depth axis.
+            # The manual target is the point to reach with the IK tool tip
+            # (Link4 endpoint). Keep all three axes in the command frame.
+            # order_decision() returns legacy mixed coordinates: arm X/Y and
+            # EE-relative Z, which would discard Z_DIFF_EE2ARM here.
+            transform = self.harvest_order.transform_tools
+            ee_point = transform.camera_to_ee(camera_mm, 0.0)
+            point = transform.ee_to_arm(ee_point)
+            # Apply manual calibration after the full camera -> EE -> arm chain.
             x = float(point[0]) + self.MANUAL_OFFSET_X_MM
             y = float(point[1])
             z = float(point[2]) + self.MANUAL_OFFSET_Z_MM
@@ -2161,6 +2166,7 @@ class Vision_Service(Node):
                 f'固定奥行き変換成功 pixel=({pixel_x},{pixel_y}) '
                 f'depth={self.MANUAL_FIXED_DEPTH_MM:.0f}mm '
                 f'camera=({camera_mm[0]:.1f},{camera_mm[1]:.1f},{camera_mm[2]:.1f})mm '
+                f'ee=({ee_point[0]:.1f},{ee_point[1]:.1f},{ee_point[2]:.1f})mm '
                 f'arm_before=({point[0]:.1f},{point[1]:.1f},{point[2]:.1f})mm '
                 f'offset_x={self.MANUAL_OFFSET_X_MM:+.1f}mm '
                 f'offset_z={self.MANUAL_OFFSET_Z_MM:+.1f}mm '
@@ -2460,6 +2466,10 @@ class Vision_Service(Node):
 
     def vision_host_server(self, request, response):
         if request.task == "detect_check" :
+            if not self.enable_over_camera:
+                self.get_logger().warning('俯瞰カメラ無効のためdetect_checkを実行できません')
+                response.detect_check = False
+                return response
             if request.direction == "f":
                 forward_or_back = "f"
             elif request.direction == "b":

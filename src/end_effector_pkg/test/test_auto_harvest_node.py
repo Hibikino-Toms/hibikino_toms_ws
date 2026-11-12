@@ -3,7 +3,9 @@
 import json
 import time
 import unittest
+import tempfile
 from pathlib import Path
+import yaml
 
 import rclpy
 from std_msgs.msg import String
@@ -11,19 +13,46 @@ from std_msgs.msg import String
 from end_effector_pkg.auto_harvest_node import AutoHarvestNode
 
 
-CONFIG = Path(__file__).resolve().parents[1]/'config/auto_harvest.yaml'
+CONFIG = Path(__file__).resolve().parents[3]/'module/set_params.yaml'
 
 
 class AutoHarvestGatesTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        rclpy.init(args=['--ros-args', '-p', f'config_file:={CONFIG}', '-p',
+        # Preserve the old four-DC-motor regression scenarios independently of
+        # the current three-actuator hardware configuration.
+        cls.temp = tempfile.TemporaryDirectory(prefix='ee-legacy-test-')
+        config = yaml.safe_load(CONFIG.read_text())
+        cfg = config['auto_harvest']
+        cfg['hardware_profile'] = 'legacy_four_dc'
+        # The installed profile has no pitch sensor; supply legacy fixture data.
+        cfg['initial_pose']['pot2'] = 3900
+        cfg['harvest_pose']['pot2'] = 3150
+        cfg['sensor_limits']['pot2'] = [2700, 3930]
+        cfg['increase_pwm_sign']['pot2'] = -1
+        cfg['increase_pwm_sign']['pot3'] = -1
+        cfg['home_stability_tolerance']['pot2'] = 50
+        cfg['pwm']['slow_band']['pot2'] = 180
+        cfg['progress_min_delta']['pot2'] = 3
+        cfg['initial_pose']['pot3'] = 1500
+        cfg['harvest_pose']['pot3'] = 3600
+        cfg['sensor_limits']['pot3'] = [1500, 3600]
+        cfg['target_tolerance']['pot3'] = 35
+        cfg['target_tolerance']['pot2'] = 35
+        cfg['pwm']['min'] = dict.fromkeys(('pot1', 'pot2', 'pot3', 'enc4'), 140)
+        cfg['pwm']['max'] = dict.fromkeys(('pot1', 'pot2', 'pot3', 'enc4'), 220)
+        cfg['encoder_homing']['retract_pwm'] = -140
+        cfg['increase_pwm_sign']['enc4'] = -1
+        path = Path(cls.temp.name)/'legacy.yaml'
+        path.write_text(yaml.safe_dump(config))
+        rclpy.init(args=['--ros-args', '-p', f'config_file:={path}', '-p',
                          'backend:=sim', '-p', 'keyboard_enabled:=false'])
 
     @classmethod
     def tearDownClass(cls):
         if rclpy.ok():
             rclpy.shutdown()
+        cls.temp.cleanup()
 
     def setUp(self):
         self.node = AutoHarvestNode()
@@ -108,7 +137,7 @@ class AutoHarvestGatesTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'recovery moved farther out'):
             self.node._drive_targets(time.monotonic(), values, new_sample=True)
 
-    def test_home_reference_accepts_logged_sensor_jitter(self):
+    def test_logged_sensor_jitter_is_reported_but_c_cannot_zero_encoder(self):
         samples = [
             dict(pot1=1865, pot2=2679, pot3=1461, enc4=49),
             dict(pot1=1888, pot2=2707, pot3=1477, enc4=49),
@@ -122,7 +151,8 @@ class AutoHarvestGatesTest(unittest.TestCase):
         self.node.telemetry = dict(samples[-1], pwm=[0, 0, 0, 0])
         self.node.sample_time = time.monotonic()
         self.node._handle_key('c')
-        self.assertEqual(self.node.state, self.node.WAIT_ZERO)
+        self.assertEqual(self.node.state, self.node.WAIT_HOME)
+        self.assertFalse(self.node.homing_verified)
 
     def test_home_reference_waits_when_sensor_jitter_exceeds_configured_span(self):
         samples = [
