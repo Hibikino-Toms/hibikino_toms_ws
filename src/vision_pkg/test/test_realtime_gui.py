@@ -24,11 +24,12 @@ def test_gui_is_single_main_thread_and_headless_does_not_open_window(monkeypatch
     node.show_window=False
     node._show_window(img)
     assert len(events)==3
-    node.pipeline=Mock()
+    pipeline=Mock();node.pipeline=pipeline
     monkeypatch.setattr(realtime.cv2,'destroyAllWindows',lambda:events.append(('destroy',threading.current_thread())))
     monkeypatch.setattr(realtime.Node,'destroy_node',lambda _:None)
     node.destroy_node()
-    node.pipeline.stop.assert_called_once()
+    pipeline.stop.assert_called_once()
+    assert node.pipeline is None
     assert events[-1]==('destroy',threading.main_thread())
 
 
@@ -39,7 +40,7 @@ def frame_rig():
     from pathlib import Path
     from vision_pkg.modules.image_servo import ImageServo
     cfg=yaml.safe_load((Path(__file__).parents[1]/'config/realtime_detector.yaml').read_text())['target']
-    cfg=dict(cfg,desired_distance_m=.25,target_pixel=None,target_pixel_offset_x_px=0.)
+    cfg=dict(cfg,desired_distance_m=.25,target_pixel=None,target_pixel_offset_x_px=0.,goal_yaw_deg=100.)
     node=object.__new__(realtime.RealtimeTomatoDetector)
     node.synthetic=True;node.ready=True;node.target_cfg=cfg
     node.servo=ImageServo(cfg,640,480);node.pose_history=deque([(10.,np.array([0.,.23,np.radians(100)]))])
@@ -104,3 +105,99 @@ def test_draw_accepts_subpixel_boxes_and_shows_once():
     node.diag={'reason':'tracking'};node._show_window=Mock()
     realtime.RealtimeTomatoDetector._draw(node,image,detections,detections[0],None,.25)
     node._show_window.assert_called_once()
+
+
+def test_no_camera_frames_shows_status_holds_and_publishes_zero_fps():
+    node,*_=frame_rig()
+    node.synthetic=False
+    node.pipeline=Mock()
+    node.pipeline.poll_for_frames.return_value=None
+    node.last_frame_time=realtime.time.monotonic()-3.
+    node.last_rate_log=realtime.time.monotonic()-6.
+    node._maybe_reconnect_camera=Mock()
+    logger=Mock();node.get_logger=lambda:logger
+    node.process_frame()
+    assert node.diag['reason']=='camera_timeout'
+    node._show_status.assert_called_once()
+    node._maybe_reconnect_camera.assert_called_once()
+    node._publish_goal.assert_not_called()
+    node.hold_pub.publish.assert_called_once()
+    node.diag_pub.publish.assert_called_once()
+    assert '0.00fps' in logger.info.call_args.args[0]
+
+
+def test_camera_reconnect_is_throttled_and_waits_for_fresh_frame():
+    node,*_=frame_rig()
+    node.frame_timeout=2.;node.reconnect_interval=3.
+    node.last_frame_time=realtime.time.monotonic()-4.
+    node.last_camera_reconnect=-float('inf');node.camera_reconnect_count=0
+    node._stop_camera=Mock();node._open_d405=Mock()
+    node.diag={}
+    node._maybe_reconnect_camera()
+    assert node.diag['reason']=='camera_reconnecting'
+    assert node.last_capture is None
+    assert node.camera_reconnect_count==1
+    node._stop_camera.assert_called_once()
+    node._open_d405.assert_called_once()
+    node._publish_goal.assert_not_called()
+    node._maybe_reconnect_camera()
+    assert node._open_d405.call_count==1
+
+
+def test_camera_reconnect_failure_keeps_hold_and_reports_failure():
+    node,*_=frame_rig()
+    node.frame_timeout=2.;node.reconnect_interval=3.
+    node.last_frame_time=realtime.time.monotonic()-4.
+    node.last_camera_reconnect=-float('inf');node.camera_reconnect_count=0
+    node._stop_camera=Mock();node._open_d405=Mock(side_effect=RuntimeError('USB device missing'))
+    node.diag={}
+    node._maybe_reconnect_camera()
+    assert node.diag['reason']=='camera_reconnecting'
+    assert node.diag['camera_reconnect_error']=='USB device missing'
+    node._publish_goal.assert_not_called()
+
+
+def z_frame_rig(phase='IDLE'):
+    node,image,depth,detections=frame_rig()
+    node.z_enabled=True;node.z_pub=Mock();node.frame_id='arm_base'
+    node.z_status=(dict(stamp=10.,homed=True,xy_inhibited=phase!='IDLE',
+                       phase=phase,trigger_error_m=.010), realtime.time.monotonic())
+    return node,image,depth,detections
+
+
+@pytest.mark.parametrize('offset_px,correction', [(0.,0.),(36.,-.015),(-36.,.015)])
+def test_z_observation_uses_target_pixel_and_depth(offset_px,correction):
+    node,image,depth,detections=z_frame_rig()
+    detections[0]['center']=(319.5,239.5+offset_px)
+    node.process_frame()
+    msg=node.z_pub.publish.call_args.args[0]
+    assert msg.vector.z==pytest.approx(correction,abs=1e-8)
+    assert msg.header.frame_id=='arm_base' and msg.header.stamp.sec==10
+    if abs(correction)>=.010:
+        node._publish_goal.assert_not_called()
+        node.hold_pub.publish.assert_not_called()  # A Z observation is not a stop request.
+        assert node.diag['reason']=='z_motion_hold'
+    else:node._publish_goal.assert_called_once()
+
+
+def test_z_moving_keeps_observations_flowing_but_no_xy_goals():
+    node,*_=z_frame_rig('MOVING_Z')
+    node.process_frame()
+    node.z_pub.publish.assert_called_once()
+    node._publish_goal.assert_not_called()
+    node.hold_pub.publish.assert_not_called()
+    assert node.diag['reason']=='z_motion_hold'
+
+
+def test_z_depth_jump_and_stale_state_issue_hold_not_motion():
+    node,*_=z_frame_rig('MOVING_Z')
+    node.z_previous_depth=.40;node.z_depth_track_id=1
+    node.process_frame()
+    assert node.diag['reason']=='depth_jump'
+    node.z_pub.publish.assert_not_called()
+    node.hold_pub.publish.assert_called_once()
+    node,*_=z_frame_rig()
+    node.z_status[0]['stamp']=9.
+    node.process_frame()
+    assert node.diag['reason']=='z_state_unavailable'
+    node.z_pub.publish.assert_not_called()

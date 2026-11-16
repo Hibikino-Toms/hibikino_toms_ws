@@ -3,12 +3,13 @@
 """
 jetson_model_bench.py
 =====================
-在 Jetson 上单独测试 YOLO / SAM3 的效果与性能。
+在 Jetson 上单独测试 YOLO / YOLOE / SAM3 的效果与性能。
 
 功能
 ----
 - 实时显示摄像头画面 + 识别结果（框 / 掩码）+ 当前帧数
-- 运行中按 [s] 在 YOLO 与 SAM3 之间切换（会释放旧模型显存再加载新模型）
+- 运行中按 [s] 在已指定的模型间循环切换 YOLO → YOLOE → SAM3（会释放旧模型显存再加载新模型）
+- YOLOE / SAM3 都用 --prompt 的文本提示（YOLOE 可用 --yoloe-prompt 单独指定）
 - 每次加载模型后自动：预热 N 秒 -> 评估 M 秒 -> 输出报告
   报告包含：平均 FPS、推理耗时 (mean/p50/p95/max)、内存 (系统/进程/torch)、
            CPU / GPU 占用、温度、功耗、模型加载时间与加载内存增量
@@ -22,8 +23,12 @@ Jetson 上会自动调用 tegrastats 读取 RAM / GPU / 温度 / 功耗，无需
 
 示例
 ----
-# RealSense 手先相机，先跑 YOLO，可切到 SAM3
-python3 jetson_model_bench.py --yolo best.pt --sam3 sam3.pt --source realsense --serial 230322272057
+# RealSense 手先相机，三个模型都加载，按 [s] 循环切换
+python3 jetson_model_bench.py --yolo best.pt --yoloe yoloe-26s-seg.pt --sam3 sam3.pt \
+    --prompt "tomato,tomato peduncle" --source realsense --serial 230322272057
+
+# 只测 YOLOE
+python3 jetson_model_bench.py --yoloe yoloe-26s-seg.pt --prompt "tomato" --source realsense
 
 # USB 相机 0，只测 TensorRT 引擎，评估 120 秒
 python3 jetson_model_bench.py --yolo best.engine --source 0 --duration 120
@@ -455,6 +460,70 @@ class YoloRunner:
         del self.model
 
 
+_MASK_PATCHED = False
+
+
+def patch_mask_dtype():
+    """修复 ultralytics 在 half=True 时 process_mask 的 dtype 冲突:
+    RuntimeError: expected mat1 and mat2 to have the same dtype, but got: c10::Half != float
+    (masks_in 为 FP16，protos 被 .float() 成 FP32)。只把掩码合成这一步转为 FP32，推理主体仍是 FP16。"""
+    global _MASK_PATCHED
+    if _MASK_PATCHED:
+        return
+    try:
+        from ultralytics.utils import ops
+
+        def wrap(fn):
+            def f(protos, masks_in, *a, **k):
+                return fn(protos.float(), masks_in.float(), *a, **k)
+            f.__wrapped__ = fn
+            return f
+
+        for name in ("process_mask", "process_mask_native"):
+            if hasattr(ops, name):
+                setattr(ops, name, wrap(getattr(ops, name)))
+        _MASK_PATCHED = True
+        print("[Patch] process_mask 已改为 FP32 合成掩码 (修复 Half != float)")
+    except Exception as e:
+        print(f"[Patch] process_mask 补丁未应用: {e}")
+
+
+class YoloeRunner(YoloRunner):
+    """YOLOE: 开放词汇 YOLO。用文本提示 (--prompt) 指定要检测的类别。
+    - *-seg.pt       : 用 set_classes() 设置文本类别（首次会下载 mobileclip 文本编码器）
+    - *-seg-pf.pt    : prompt-free，内置大词表，不需要也不能 set_classes
+    - .engine / .onnx: 导出时类别已固化，不能再改
+    """
+    kind = "yoloe"
+
+    def __init__(self, path, args):
+        from ultralytics import YOLOE
+        if args.half:
+            patch_mask_dtype()
+        self.name = os.path.basename(path)
+        self.model = YOLOE(path)
+        self.kw = dict(conf=args.yoloe_conf, iou=args.iou, imgsz=args.imgsz, verbose=False)
+        if args.device:
+            self.kw["device"] = args.device
+        if args.half:
+            self.kw["half"] = True
+
+        prompts = [p.strip() for p in (args.yoloe_prompt or args.prompt).split(",") if p.strip()]
+        is_pf = "-pf" in self.name
+        is_exported = not path.endswith(".pt")
+        if is_pf:
+            print("[YOLOE] prompt-free 模型，忽略 --prompt，使用内置词表")
+        elif is_exported:
+            print("[YOLOE] 导出模型 (engine/onnx)，类别在导出时已固定，忽略 --prompt")
+        else:
+            t0 = time.perf_counter()
+            try:
+                self.model.set_classes(prompts)  # 新版接口
+            except TypeError:
+                self.model.set_classes(prompts, self.model.get_text_pe(prompts))  # 旧版接口
+            print(f"[YOLOE] 文本类别: {prompts} (文本编码 {time.perf_counter() - t0:.1f}s)")
+
+
 class Sam3Runner:
     kind = "sam3"
 
@@ -528,14 +597,18 @@ def release_cuda():
         torch.cuda.empty_cache()
 
 
+RUNNERS = {"yolo": YoloRunner, "yoloe": YoloeRunner, "sam3": Sam3Runner}
+MODEL_ORDER = ["yolo", "yoloe", "sam3"]  # [s] 键按这个顺序循环切换
+
+
 def load_runner(kind, args, sample_frame):
-    path = args.yolo if kind == "yolo" else args.sam3
+    path = getattr(args, kind)
     print(f"\n[Load] 加载 {kind}: {path}")
     release_cuda()
     ram0, _ = read_meminfo_mb()
     rss0 = proc_rss_mb()
     t0 = time.perf_counter()
-    runner = YoloRunner(path, args) if kind == "yolo" else Sam3Runner(path, args)
+    runner = RUNNERS[kind](path, args)
     # 第一次推理才真正初始化 CUDA/权重，算进加载时间，避免污染评估
     runner.infer(sample_frame)
     load_s = time.perf_counter() - t0
@@ -771,8 +844,9 @@ def parse_args():
     p = argparse.ArgumentParser(description="Jetson YOLO / SAM3 性能与效果测试",
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--yolo", default=None, help="YOLO 权重 (.pt / .engine / .onnx)")
+    p.add_argument("--yoloe", default=None, help="YOLOE 权重 (如 yoloe-26s-seg.pt / yoloe-11s-seg.pt / *-seg-pf.pt)")
     p.add_argument("--sam3", default=None, help="SAM3 权重 (sam3.pt)")
-    p.add_argument("--start", choices=["yolo", "sam3"], default="yolo", help="先运行哪个模型")
+    p.add_argument("--start", choices=MODEL_ORDER, default=None, help="先运行哪个模型 (默认按 yolo→yoloe→sam3 取第一个指定的)")
     # 图像源
     p.add_argument("--source", default="realsense",
                    help="realsense / 相机编号(0) / /dev/videoX / 视频文件 / GStreamer 管线")
@@ -788,7 +862,10 @@ def parse_args():
     p.add_argument("--task", default=None, help="TensorRT 引擎需要时指定: segment / detect")
     p.add_argument("--classes", type=int, nargs="*", default=None, help="只保留这些类别 ID")
     # SAM3 参数
-    p.add_argument("--prompt", default="tomato", help="SAM3 文本提示，多个用逗号分隔，如 'red tomato,green tomato'")
+    p.add_argument("--prompt", default="tomato", help="SAM3 / YOLOE 文本提示，多个用逗号分隔，如 'red tomato,green tomato'")
+    # YOLOE 参数（--iou / --imgsz 与 YOLO 共用）
+    p.add_argument("--yoloe-prompt", default=None, help="单独给 YOLOE 的文本提示，不指定则用 --prompt")
+    p.add_argument("--yoloe-conf", type=float, default=0.25, help="YOLOE 置信度阈值")
     p.add_argument("--sam-conf", type=float, default=0.4)
     p.add_argument("--sam-imgsz", type=int, default=None,
                    help="SAM3 输入尺寸 (需为14的倍数，原生训练尺寸 1008；不指定则用 ultralytics 默认)")
@@ -804,9 +881,9 @@ def parse_args():
     p.add_argument("--display-width", type=int, default=1280, help="显示窗口最大宽度")
     p.add_argument("--out", default="bench_results", help="结果保存目录")
     a = p.parse_args()
-    if not a.yolo and not a.sam3:
-        p.error("至少指定 --yolo 或 --sam3 之一")
-    for k in ("yolo", "sam3"):
+    if not any(getattr(a, k) for k in MODEL_ORDER):
+        p.error("至少指定 --yolo / --yoloe / --sam3 之一")
+    for k in MODEL_ORDER:
         path = getattr(a, k)
         if path and not os.path.exists(path):
             p.error(f"找不到文件: {path}")
@@ -817,8 +894,9 @@ def parse_args():
 
 def main():
     args = parse_args()
-    available = [k for k in ("yolo", "sam3") if getattr(args, k)]
+    available = [k for k in MODEL_ORDER if getattr(args, k)]
     current = args.start if args.start in available else available[0]
+    print(f"[Models] 可用: {available}，当前: {current}")
 
     monitor = SystemMonitor(args.monitor_interval)
     monitor.start()
@@ -906,13 +984,13 @@ def main():
                     print("[Eval] 重新开始评估")
                 elif key == ord("s"):
                     if len(available) < 2:
-                        print("[Switch] 只指定了一个模型，无法切换（同时传 --yolo 和 --sam3）")
+                        print("[Switch] 只指定了一个模型，无法切换（--yolo / --yoloe / --sam3 至少传两个）")
                         continue
                     finish_session(sess, monitor, baseline, args.out, partial=True)
                     runner.close()
                     del runner
                     release_cuda()
-                    current = "sam3" if current == "yolo" else "yolo"
+                    current = available[(available.index(current) + 1) % len(available)]
                     runner, load_info = load_runner(current, args, frame)
                     sess = EvalSession(runner, load_info, args.warmup, args.duration)
                     stats = {"fps_ema": 0.0, "infer_ema": 0.0, "n_det": 0}

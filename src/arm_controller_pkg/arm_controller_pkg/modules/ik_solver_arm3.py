@@ -1,7 +1,8 @@
 """Bounded damped-least-squares IK for the existing planar arm.
 
 Public coordinates use metres and radians. The geometry preserves the legacy
-FK convention: link 1 has the fixed perpendicular offset ``(L1, L2)``.
+FK convention: link 1 has the optional perpendicular offset ``(L1, L2)``.
+L2 may be zero when that mechanical offset is absent.
 """
 from dataclasses import dataclass
 import math
@@ -25,8 +26,9 @@ class InverseKinematicsSolver:
             float(params[k]) / 1000.0
             for k in ("Link1", "Link2", "Link3", "Link4")
         ])
-        if self.lengths.shape != (4,) or not np.all(np.isfinite(self.lengths)) or np.any(self.lengths <= 0):
-            raise ValueError("link lengths must be four positive finite millimetre values")
+        if (self.lengths.shape != (4,) or not np.all(np.isfinite(self.lengths)) or
+                np.any(self.lengths[[0, 2, 3]] <= 0) or self.lengths[1] < 0):
+            raise ValueError("Link1/Link3/Link4 must be positive finite millimetre values; Link2 must be finite and nonnegative")
         self.max_iterations = int(params.get("MAX_LOOP_NUM", 80))
         self.position_tolerance = float(params.get("position_tolerance_m", 0.002))
         self.angle_tolerance = float(params.get("angle_tolerance_rad", math.radians(1.0)))
@@ -79,6 +81,24 @@ class InverseKinematicsSolver:
         return (angle + math.pi) % (2.0 * math.pi) - math.pi
 
     def solve(self, goal, current_joints):
+        return self._solve(goal, current_joints, self.position_tolerance, self.angle_tolerance)
+
+    def solve_tracking(self, goal, current_joints, position_resolution_m=0.0001,
+                       angle_resolution_rad=0.001):
+        """Refine small corrections even when application acceptance is loose.
+
+        Arrival tolerances are not a numerical deadband for visual-servo goals.
+        Refinement is at least as strict as normal IK, bounded by its existing
+        iteration/step limits. Failure to meet it still returns failure.
+        """
+        if not all(math.isfinite(v) and v > 0 for v in
+                   (position_resolution_m, angle_resolution_rad)):
+            raise ValueError('tracking correction resolutions must be positive and finite')
+        return self._solve(goal, current_joints,
+                           min(self.position_tolerance, position_resolution_m),
+                           min(self.angle_tolerance, angle_resolution_rad))
+
+    def _solve(self, goal, current_joints, position_tolerance, angle_tolerance):
         goal = self._vector(goal, (3,), "goal [x_m,y_m,yaw_rad]")
         q = self._vector(current_joints, (3,), "current_joints").copy()
         if np.any(q < self.limits[:, 0]) or np.any(q > self.limits[:, 1]):
@@ -89,7 +109,7 @@ class InverseKinematicsSolver:
             error = np.asarray([goal[0] - pose[0], goal[1] - pose[1], self.wrap(goal[2] - pose[2])])
             pos_error = float(np.linalg.norm(error[:2]))
             ang_error = abs(float(error[2]))
-            if pos_error <= self.position_tolerance and ang_error <= self.angle_tolerance:
+            if pos_error <= position_tolerance and ang_error <= angle_tolerance:
                 return IKResult(True, "converged", q.copy(), pos_error, ang_error, iteration)
             if iteration == self.max_iterations:
                 break

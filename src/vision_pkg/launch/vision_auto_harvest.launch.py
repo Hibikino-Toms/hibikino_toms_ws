@@ -36,6 +36,7 @@ def nodes(context):
             'synthetic_camera': str(synthetic).lower(),
             'show_window': LaunchConfiguration('show_window'),
             'vision_config': LaunchConfiguration('vision_config'),
+            'z_tracking_enabled': LaunchConfiguration('z_tracking_enabled'),
         }.items())
     return [ee_node, tracking]
 
@@ -47,6 +48,7 @@ def generate_launch_description():
         DeclareLaunchArgument('startup_mode', default_value='configured'),
         DeclareLaunchArgument('synthetic_camera', default_value='true'),
         DeclareLaunchArgument('show_window', default_value='true'),
+        DeclareLaunchArgument('z_tracking_enabled', default_value='false'),
         DeclareLaunchArgument('vision_config',
             default_value=str(vision/'config/realtime_detector.yaml')),
         OpaqueFunction(function=nodes),

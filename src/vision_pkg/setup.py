@@ -9,8 +9,10 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
-        ('share/' + package_name, ['package.xml', 'README_realtime_ja.md']),
-        ('share/' + package_name + '/config', ['config/realtime_detector.yaml']),
+        ('share/' + package_name, ['package.xml', 'README_realtime_ja.md',
+                                 'README_z_pixel_tracking_ja.md', 'README_image_approach_ja.md']),
+        ('share/' + package_name + '/config', ['config/realtime_detector.yaml',
+                                            'config/vision_xy_tracking.yaml']),
         ('share/' + package_name + '/launch', ['launch/vision_service_realtime.launch.py']),
         ('share/' + package_name + '/launch', ['launch/vision_xy_tracking.launch.py']),
         ('share/' + package_name + '/launch', ['launch/vision_auto_harvest.launch.py']),

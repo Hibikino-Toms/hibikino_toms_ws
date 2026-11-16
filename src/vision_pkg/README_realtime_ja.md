@@ -1,4 +1,73 @@
-# D405 トマト画像追従（XY・yaw固定）
+# D405 トマト画像追従（XY・yaw固定、任意でZ補正）
+
+## このlaunchの設定ファイル（統合済み）
+
+`vision_xy_tracking.launch.py` は **`src/vision_pkg/config/vision_xy_tracking.yaml` の1ファイル**から設定を読みます。アームとvisionの両ノードに同じファイルを渡すため、一時ファイルへの分割はしません。従来の数値は維持しています。
+
+| 調整内容 | YAML内の場所 |
+|---|---|
+| 起動バックエンド・Z有効・到達保持・画面表示 | `launch` |
+| 制御周期、関節速度・加速度、IK許容差・補正分解能 | `tracking` |
+| 初期関節角 | `startup.home_joints_deg` / `startup.demo_joints_deg` |
+| リンク寸法・関節制限 | `ik_solver_params` / `joint_limits_deg` |
+| CAN・Dynamixelの校正・通信 | `can_mixed_backend` / `dxl_params` |
+| Zの開始・停止画素幅、移動量、速度 | `z_tracking` |
+| 到達許容差・安定確認時間 | `harvest_cycle` |
+| カメラ・検出モデル・検出周期 | `camera` / `detector` / `processing_rate_hz` |
+| 目標画素の左右・上下オフセット | `target.target_pixel_offset_x_px` / `target.target_pixel_offset_y_px` |
+| 手先yaw・カメラ基準yaw | `target.goal_yaw_deg` / `target.camera_reference_yaw_deg` |
+| 目標距離・画像接近速度 | `target.desired_distance_m` / `target.image_approach` |
+
+起動引数は `launch` の設定を上書きします。既定の `launch.backend: sim` と `launch.z_tracking_enabled: false` は従来どおりです。実機にはこれまでのコマンドを使えます:
+
+**`startup_mode:=configured` と `z_tracking_enabled:=true` の組合せでは、起動ごとにZを自動原点復帰します。** Picoが原点確定済みでも再実行します。通信確認・XYの実測停止確認 → Z原点復帰・離脱・整定 → XYのhome/demo姿勢 → 追従開始、の順です。原点復帰に失敗するとXYへ進まず異常保持し、自動再試行しません。Zを無効にした場合はZを操作しません。
+
+```bash
+source ~/hibikino_toms_ws/install/setup.bash
+ros2 launch vision_pkg vision_xy_tracking.launch.py \
+  backend:=can_mixed startup_mode:=configured \
+  synthetic_camera:=false show_window:=true \
+  z_tracking_enabled:=true harvest_cycle_enabled:=true
+```
+
+別の統合YAMLを使うには `config_file:=/絶対パス/vision_xy_tracking.yaml` を追加します。変更後はノードを再起動してください。`--symlink-install` でビルド済みならYAMLの数値変更だけで再ビルドは不要です。コピーインストールでは再ビルドしてください。
+
+`z_tracking:` など同じ階層のキーを複数回書かず、既存ブロック内の値を編集してください。後半ブロックで前半が上書きされる事故を防ぐため、launchは重複キーを行番号付きで検出し、ノード起動前に停止します。
+
+初期姿勢を変更した場合は、初期角度を追従中も保持するため `target.goal_yaw_deg` を `startup.demo_joints_deg` の3角度の合計に合わせてください。現在は `[10,110,-20]` なので100°です。`camera_reference_yaw_deg` は取付け校正の基準で、別の設定です。
+
+`target_lost_or_ambiguous` は検出自体があっても同じ対象への対応付けができない場合に出ます。画像接近モードでは最初の対象IDをXY・Z共通で固定し、長い消失後に別IDを再取得しても `approach_target_changed` で保持します。再取得IDのZ観測を先に送ることはありません。Z補正中の対象消失は従来どおり停止・異常保持し、再開には原因を確認してlaunchを再起動します。
+
+**旧 `xy_robot_config.yaml`・`xy_tracking_params.yaml`・`realtime_detector.yaml` は、他のlaunchや単独ノード用として残しています。このlaunchからは参照せず、自動同期もしません。** 以下の旧ファイル名に関する説明は、統合ファイル内の同名キーへ読み替えてください。互換用の `vision_config:=...` を明示した場合だけ、vision部分を指定ファイルから読みます。
+
+## 遠距離は画像で接近、近距離で深度へ（2026-11-17更新）
+
+既定で `target.image_approach.enabled: true` です。遠距離では深度を必須とせず、同じトマトの**横画素誤差を減らしながら、設定速度で前進**します。横ずれが大きいほど前進を抑えます。深度の代わりに仮の3D目標を作る処理はありません。
+
+既定の前進速度は40mm/s、画像だけで動く上限は実測XY移動200mmまたは15秒です。350mm以内の有効深度を初めて得た時点で画像だけの前進を止め、380mmまでの深度で3フレームの安定確認後に `desired_distance_m`（現在150mm）への距離制御へ切り替えます。その後の深度欠損では保持し、画像だけの前進には戻しません。Z補正中もXYは保持します。
+
+設定は `config/realtime_detector.yaml` の `target.image_approach`、詳しい設定・診断・制約は **[画像接近の手順書](README_image_approach_ja.md)** を参照してください。実機ROSBAGで約150mmへの接近と既存到達判定による保持を確認しました。IKの補正分解能は到達許容差と独立させています。記録はワークスペース直下の `tracking_trials_20261117/` に保存しています。衝突回避・EEによる収穫成功を検証したものではありません。
+
+## 縦画素によるZ補正（2026-11-17更新）
+
+画像の目標高さから **画像高の1/10以上** ずれたら、XYを保持してZを動かし、**1/20以内** に収まったら停止します。480px画像なら開始48px、停止24pxです。Zの判定に深度は使いません。
+
+目標高さは `config/realtime_detector.yaml` の `target.target_pixel_offset_y_px: 0.0` です。`target_pixel: null` のとき中心からのオフセットになり、正は下、負は上です。
+
+Z移動は既定5mmずつの上限で行い、各区間で新しい画像を確認します。補正中はXYを保持し続け、移動中でも内側の範囲に入ったらZ停止を要求します。深度が無効でもZ補正を続けられ、完了後のXYは上記の画像接近／深度制御に従います。対象消失・古い画像・通信異常時は停止保持します。
+
+**[設定・起動・停止・ROSBAG・制約の詳細](README_z_pixel_tracking_ja.md)**
+
+```bash
+source ~/hibikino_toms_ws/install/setup.bash
+ros2 launch vision_pkg vision_xy_tracking.launch.py \
+  backend:=can_mixed startup_mode:=configured synthetic_camera:=false \
+  harvest_cycle_enabled:=false z_tracking_enabled:=true show_window:=true
+```
+
+前回の `Z_TRACKING_V1` ファームウェアをそのまま使います。上記のconfigured起動ではZ原点復帰も自動です。`startup_mode:=current` では自動原点復帰せず、原点未確定ならXYを保持して待ちます。この場合はスイッチと移動余裕を確認してから `/arm_xy/z/home` を要求します。無指定ではZ補正無効です。
+
+以前の「深度換算10mm」の方式は、現在の追従経路では使いません。以前の数値検証は [履歴](../arm_controller_pkg/validation/z_tracking_20261117/summary.json) として残してあり、画素方式の実測結果ではありません。
 
 自動EE収穫サイクルは[end_effector_pkgの手順書](../end_effector_pkg/README_auto_harvest_ja.md)を参照してください。新しいlaunchは `vision_auto_harvest.launch.py` です。既存の手動連携 `arm_ee_keycontrol.launch.py` とは別にEEシリアルを開くので、同時には起動しないでください。
 
@@ -100,7 +169,7 @@ python src/vision_pkg/test/run_harvest_cycle_validation.py
 
 ## 目的と今回の原因
 
-画像追従部分は、手先と一緒に動くD405で、**同じトマトの画像横位置を目標画素に保ち、設定距離または観測開始時の距離を維持**します。上記の収穫サイクルはこの接近・保持処理とEE端末の操作を連携させます。
+画像追従部分は、手先と一緒に動くD405で、**同じトマトの画像横位置を目標画素に合わせます**。遠距離では画像接近を行い、近距離の深度確定後に設定距離または観測開始時の距離を維持します。以下の距離計算の説明は深度制御段階（または `image_approach.enabled: false`）のものです。上記の収穫サイクルはこの接近・保持処理とEE端末の操作を連携させます。
 
 旧リアルタイムノードは中央に近い検出を選んだ後、トマトの3D位置全量を現在手先位置へ加算していました。そのため中央でも距離分の移動目標が発生しました。毎フレームの中心最近傍選択には対象切替もありました。trackerでは各関節の速度を個別にクリップし、IK解が正しいyawでも途中の `q1+q2+q3` が変わる問題がありました。提供動画の約15秒のフレームでは、赤い検出枠と中心がトマト中央でなく左側の指に重なっています（表示深度0.091m）。取付角の誤差、手を含む検出中心の偏りも実機の左移動を生む可能性がありますが、それらの実測校正は今回行っていません。
 
@@ -170,6 +239,34 @@ source install/setup.bash
 ```
 
 ソースのYAMLを書き換えたら再ビルドしてください。通常インストールでは `install/vision_pkg/share/vision_pkg/config/realtime_detector.yaml` はコピーです。今回ソース側の並進Z=0に対しinstall側に0.110が残っていた点も確認し、再ビルドで揃えています。
+
+### D405画面が出ない・途中で止まる場合（2026-11-16）
+
+`Opened RealSense`はストリーム開始が成功したという意味です。その後のUSB切断は別に確認します。2026-11-16 14:45:25の調査ログでは、D405のUVC処理で`-71`と`-32`が発生してUSBが切断され、14:45:30に新しいUSB機器番号で再認識されていました。旧ノードは古いSDKパイプラインをpollし続け、画像なしの分岐ではウィンドウも周期ログも表示しなかったため、何も起きないように見えていました。`goal_age=inf`はtrackerが目標を一度も受理していない状態を表します。
+
+修正版は起動直後から待機画面を表示し、画像がなくても5秒ごとの周期ログと`/vision/servo_diagnostics`を出します。`camera_frame_age_sec`は最後にフレームを受け取ってからの経過時間、`camera_reconnect_count`はSDK再接続の試行回数です。YAMLの`camera`に以下を追加しています。
+
+```yaml
+camera:
+  frame_timeout_sec: 2.0       # この時間フレームがなければSDK接続を開き直す
+  reconnect_interval_sec: 3.0 # 再接続試行の最小間隔
+```
+
+画像未受信・再接続中はアーム保持を要求し、目標を送りません。再接続後も新しい画像・時刻・実測姿勢などの通常の検証を通った場合に目標を送ります。この処理はカメラのSDK接続を閉じて開き直すもので、USB機器のハードウェアリセットやアームの再初期化は行いません。カメラが物理的に接続できない状態なら待機と再接続を繰り返します。
+
+切り分けは、実行中のlaunchをCtrl-Cで終了してから、カメラ単独で行います。
+
+```bash
+cd ~/hibikino_toms_ws
+source install/setup.bash
+ros2 run vision_pkg vision_service_realtime --ros-args -p show_window:=true
+```
+
+別端末で`journalctl -k -f`を開き、`USB disconnect`やUVCエラーが出るか確認してください。USB経路・ケーブル・ハブ給電が候補ですが、今回のログだけで不良部品までは特定していません。複数のカメラノードで同じD405を同時に開かないでください。コマンドを改行するときの`\`は行末に置き、その後ろに空白を入れないでください。
+
+再認識後のD405を実機でカメラ単独起動し、ウォームアップ後14.66～15.00fps、処理58.3～63.3ms/枚、正常なCtrl-C終了を確認しました。取得処理がフレームを返さない状態を試験上で注入した復帰試験でも、2秒でSDK接続を開き直し、その後131枚の実画像を処理できました（物理的なUSB抜き差しを再現した試験ではありません）。未受信時の表示・保持・再接続など関連テスト26件に成功しています。実機の移動は行っていません。試験記録は`validation/camera_no_frames_20261116/`です。USB断そのものの解消と、長時間の接続安定性は別途確認が必要です。
+
+現在のアーム起動角度を`[20,100,-30]°`にした場合、合計yawは90°です。ビジョン設定の`target.goal_yaw_deg: 100`とは10°異なるため、目標を受け取ると100°へ動こうとします。`camera_reference_yaw_deg`はカメラ取付変換の基準であり、起動角や目標yawとは別に実取付へ合わせて確認してください。
 
 ### カメラ・モーターを使わない閉ループ
 

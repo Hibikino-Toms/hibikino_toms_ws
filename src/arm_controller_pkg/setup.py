@@ -23,6 +23,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
     'console_scripts': [
+        'can_joint_range_tool = arm_controller_pkg.can_joint_range_tool:main',
         'arm_controller = arm_controller_pkg.arm_controller:main', 
         'arm_smooth_controller = arm_controller_pkg.arm_smooth_controller:main', 
         'arm_client_node = arm_controller_pkg.arm_client_node:main', 

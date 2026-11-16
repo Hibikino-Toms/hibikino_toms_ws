@@ -8,6 +8,9 @@ camera:
   width: 640
   height: 480
   fps: 30
+  # Reopen a pipeline that no longer delivers frames after USB disconnect.
+  frame_timeout_sec: 2.0
+  reconnect_interval_sec: 3.0
 
 detector:
   # Relative to this YAML: ../../../module/weights/base.pt
@@ -43,13 +46,34 @@ target:
     - [0.0, -1.0, 0.0,  0.000] #0.110
     - [0.0, 0.0,  0.0,  1.000]
   # Tool target yaw is independent of camera angular calibration.
-  goal_yaw_deg: 100.0
+  goal_yaw_deg: 90.0
   # null = geometric image center ((width-1)/2, (height-1)/2), NOT principal point.
   target_pixel: null
   # Horizontal shift from target_pixel (or image center when null). + moves right, - moves left.
   target_pixel_offset_x_px: 50.0
+  # Vertical offset: + moves the target down, - moves it up. 0 = image center.
+  target_pixel_offset_y_px: 0.0
   # 0 = lock median of first stable depth samples after arm ready.
   desired_distance_m: 0.15
+  # Far target: use pixels for lateral alignment and command a bounded forward
+  # speed, then switch to depth control after stable NEAR measurements.
+  image_approach:
+    enabled: true
+    forward_speed_m_s: 0.04
+    lateral_gain_m_s_per_rad: 0.25
+    forward_gate_ratio: 0.25
+    max_speed_m_s: 0.06
+    max_acceleration_m_s2: 0.15
+    goal_horizon_sec: 0.25
+    max_step_m: 0.015
+    max_blind_travel_m: 0.20
+    max_blind_time_sec: 15.0
+    travel_deadband_m: 0.001
+    depth_switch_max_m: 0.35
+    depth_confirm_frames: 3
+    depth_confirm_spread_m: 0.015
+    depth_switch_hysteresis_m: 0.03
+    depth_control_max_speed_m_s: 0.04
   stable_depth_frames: 6
   stable_depth_spread_m: 0.005
   gain_per_sec: 20.0

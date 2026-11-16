@@ -172,7 +172,7 @@ auto_harvest:
     servo_fb: null  # hook_servo.open_feedbackを使用。
     enc4: 0
   harvest_pose:
-    enc4: -15
+    enc4: -25
     servo_fb: null  # hook_servo.closed_feedbackを使用。
   # 正の論理指令に対するセンサー増加方向。サーボ方向は校正値で決まる。
   # レールカウントは原点復帰後に +退避、-伸長へ正規化。
@@ -212,8 +212,8 @@ auto_harvest:
     # falseでも原点復帰を行い、校正待ち状態で全出力を停止する。
     # 折り返さない単調なADC範囲で両端点を測定する。
     calibration_valid: true
-    open_feedback: 1500
-    closed_feedback: 3500
+    open_feedback: 500
+    closed_feedback: 4000
     feedback_median_samples: 3
     direction_window_sec: 0.6
   simulated_counts_per_sec: 900.0
@@ -312,10 +312,10 @@ ik_solver_params:
 
 # Manual iPad target: pixel position + fixed camera-forward distance.
 manual_target_params:
-    FIXED_DEPTH_MM: 300.0  # 仮の開始値。カメラから目標平面までの距離に合わせて調整
+    FIXED_DEPTH_MM: 350.0  # 仮の開始値。カメラから目標平面までの距離に合わせて調整
     # 起動時に読み込むため、変更後はvision_service_ipadを再起動し、目標を選び直す。
-    OFFSET_X_MM: 17.0  # アームX方向の加算補正(mm)。150は15cm。微調整は2〜5mmずつ。
-    OFFSET_Z_MM: 0.0  # アームZ方向の加算補正(mm)。Y(奥行き)には補正を加えない。
+    OFFSET_X_MM: 0.0  # アームX方向の加算補正(mm)。150は15cm。微調整は2〜5mmずつ。
+    OFFSET_Z_MM: 40.0  # アームZ方向の加算補正(mm)。Y(奥行き)には補正を加えない。
 
 
 

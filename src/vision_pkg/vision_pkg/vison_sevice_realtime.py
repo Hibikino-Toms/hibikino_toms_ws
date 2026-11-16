@@ -2,8 +2,9 @@
 """Realtime D405 tomato detector and XY tracker goal publisher.
 
 The legacy spelling in the requested module name is retained intentionally.
-Horizontal pixel error and locked optical depth define bounded relative XY
-corrections. Vertical image error is diagnostic only (Z and yaw stay fixed).
+Far approach uses horizontal pixel error and bounded forward velocity without
+metric depth. Confirmed near depth enables standoff control. Opt-in discrete Z
+correction holds XY while the Z axis moves.
 """
 import math
 import json
@@ -21,6 +22,7 @@ from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import PoseStamped
 from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.node import Node
+from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
 from rclpy.qos import qos_profile_sensor_data
 
 from std_msgs.msg import Bool, Empty, String
@@ -59,6 +61,12 @@ class RealtimeTomatoDetector(Node):
             raise ValueError("processing_rate_hz must be between 10 and 20 Hz")
         self.width, self.height = int(self.camera_cfg["width"]), int(self.camera_cfg["height"])
         self.camera_fps = int(self.camera_cfg["fps"])
+        self.frame_timeout = _positive(self.camera_cfg.get("frame_timeout_sec", 2.0),
+                                       "camera.frame_timeout_sec")
+        self.reconnect_interval = _positive(self.camera_cfg.get("reconnect_interval_sec", 3.0),
+                                            "camera.reconnect_interval_sec")
+        self.last_camera_reconnect = -math.inf
+        self.camera_reconnect_count = 0
         if min(self.width, self.height, self.camera_fps) <= 0:
             raise ValueError("camera width, height and fps must be positive")
 
@@ -96,6 +104,10 @@ class RealtimeTomatoDetector(Node):
                                                   reliability=ReliabilityPolicy.RELIABLE))
         self.declare_parameter("synthetic_camera", False)
         self.declare_parameter("show_window", True)
+        self.declare_parameter('z_tracking_enabled', False)
+        self.z_enabled = bool(self.get_parameter('z_tracking_enabled').value)
+        self.z_status = None
+        self.actual_z_m = self.fixed_z_m
         self.synthetic = bool(self.get_parameter("synthetic_camera").value)
         self.show_window = bool(self.get_parameter("show_window").value)
         self.ready = False
@@ -121,10 +133,15 @@ class RealtimeTomatoDetector(Node):
         self.goal_pub = self.create_publisher(
             PoseStamped, str(self.target_cfg.get("goal_topic", "/arm_xy/goal")), 1)
         self.hold_pub = self.create_publisher(Empty, "/arm_xy/hold", 1)
+        self.xy_hold_pub = self.create_publisher(Empty, '/arm_xy/xy_hold', 1)
         self.diag_pub = self.create_publisher(String, "/vision/servo_diagnostics", 10)
         self.ready_sub = self.create_subscription(Bool, "/arm_xy/ready", self.ready_callback,
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                        reliability=ReliabilityPolicy.RELIABLE))
+        if self.z_enabled:
+            self.z_pub = self.create_publisher(String, '/arm_xy/z/pixel_observation', 1)
+            self.z_sub = self.create_subscription(String, '/arm_xy/z/state',
+                self.z_state_callback, 1)
 
         self.pipeline = None
         self.window_created = False
@@ -148,6 +165,7 @@ class RealtimeTomatoDetector(Node):
             "XY output uses the camera transform relative to the configured reference yaw "
             f"({math.degrees(self.camera_reference_yaw):.2f} deg) and live /arm_xy/actual pose; "
             "no detection or stale arm pose means no new goal")
+        self._show_status("Waiting for D405 frames" if not self.synthetic else "Starting synthetic camera")
 
     def _open_d405(self):
         wanted_serial = str(self.camera_cfg.get("serial_number", "")).strip()
@@ -209,11 +227,45 @@ class RealtimeTomatoDetector(Node):
         self.color_intrinsics = rs.video_stream_profile(
             self.profile.get_stream(rs.stream.color)).get_intrinsics()
         self.depth_scale = self.profile.get_device().first_depth_sensor().get_depth_scale()
+        self.last_frame_time = time.monotonic()
         self.get_logger().info(
             f"Opened RealSense product={product} line={product_line}, "
             f"serial={self.camera_serial}, "
             f"color/depth={self.width}x{self.height}@{self.camera_fps}fps, "
             f"depth_scale={self.depth_scale:g}m/unit")
+
+    def _stop_camera(self):
+        pipeline, self.pipeline = self.pipeline, None
+        if pipeline is not None:
+            try:
+                pipeline.stop()
+            except RuntimeError as exc:
+                self.get_logger().warning(f"D405 stop after disconnect: {exc}")
+
+    def _maybe_reconnect_camera(self):
+        """Reopen a lost SDK pipeline on the camera/main thread, without USB reset."""
+        now = time.monotonic()
+        if (now - self.last_frame_time < self.frame_timeout or
+                now - self.last_camera_reconnect < self.reconnect_interval):
+            return
+        self.last_camera_reconnect = now
+        self.camera_reconnect_count += 1
+        self.get_logger().warning(
+            f"No D405 frames for {now-self.last_frame_time:.1f}s; "
+            f"reopening camera (attempt {self.camera_reconnect_count}). "
+            "Check USB disconnect/errors with journalctl -k.")
+        self._hold('camera_reconnecting')
+        self._show_status("D405 disconnected/no frames; reconnecting. Check USB cable/hub.")
+        self._stop_camera()
+        try:
+            self._open_d405()
+        except RuntimeError as exc:
+            self.diag['camera_reconnect_error'] = str(exc)
+            self.get_logger().warning(f"D405 reopen failed: {exc}")
+            self._stop_camera()
+            return
+        self.last_capture = None
+        self.get_logger().info("D405 reopened; waiting for a fresh synchronized image before sending goals")
 
     def harvest_state_callback(self, msg):
         try:
@@ -249,6 +301,20 @@ class RealtimeTomatoDetector(Node):
     def ready_callback(self, msg):
         self.ready = msg.data
 
+    def z_state_callback(self, msg):
+        try:
+            data = json.loads(msg.data)
+            if (not isinstance(data['xy_inhibited'], bool) or not isinstance(data['homed'], bool) or
+                    not math.isfinite(float(data['stamp'])) or
+                    data.get('control_mode') != 'pixel' or
+                    not all(math.isfinite(float(data[k])) for k in ('trigger_ratio', 'stop_ratio')) or
+                    not 0 < data['stop_ratio'] < data['trigger_ratio'] <= 1.):
+                return
+            if self.z_status is None or data['stamp'] > self.z_status[0]['stamp']:
+                self.z_status = (data, time.monotonic())
+        except (ValueError, KeyError, TypeError):
+            return
+
     def actual_callback(self, msg):
         if msg.header.frame_id != self.frame_id:
             return
@@ -267,6 +333,7 @@ class RealtimeTomatoDetector(Node):
             return
         self.pose_history.append((stamp, np.asarray([p.x, p.y, yaw])))
         self.actual_pose = (p.x, p.y, yaw)
+        self.actual_z_m = p.z
         self.actual_received_at = time.monotonic()
 
     def _tomato_detections(self, result):
@@ -335,7 +402,8 @@ class RealtimeTomatoDetector(Node):
         _, pose = self.pose_history[-1]
         stamp = self.get_clock().now().nanoseconds/1e9
         r = self.servo.camera_rotation(pose[2])
-        origin = np.r_[pose[:2], self.fixed_z_m] + rotation(pose[2]-self.servo.reference) @ self.camera_to_ee[:3, 3]
+        z = self.actual_z_m if getattr(self, 'z_enabled', False) else self.fixed_z_m
+        origin = np.r_[pose[:2], z] + rotation(pose[2]-self.servo.reference) @ self.camera_to_ee[:3, 3]
         if self.sim_world is None:
             sim = self.config.get('simulation', {})
             self.sim_world = origin + r @ np.asarray(sim.get('initial_target_camera_m', [.025, .015, .25]))
@@ -363,42 +431,103 @@ class RealtimeTomatoDetector(Node):
         msg.header.stamp.nanosec = int((self.capture_stamp-sec)*1e9)
         msg.header.frame_id = self.frame_id
         msg.pose.position.x, msg.pose.position.y = x, y
-        msg.pose.position.z = self.fixed_z_m
+        msg.pose.position.z = self.actual_z_m if getattr(self, 'z_enabled', False) else self.fixed_z_m
         msg.pose.orientation.z, msg.pose.orientation.w = math.sin(yaw/2.), math.cos(yaw/2.)
         self.goal_pub.publish(msg)
 
-    def _hold(self, reason):
+    def _z_observation(self, pixel, pose, stamp, image_height):
+        """Depth-free pixel feedback; move only between the outer/inner bands."""
+        status = self.z_status
+        ros_now = self.get_clock().now().nanoseconds/1e9
+        if (status is None or time.monotonic()-status[1] > .5 or
+                abs(ros_now-status[0]['stamp']) > .5):
+            return 'z_state_unavailable', False
+        self.diag['z_phase'] = status[0]['phase']
+        if not status[0]['homed']:
+            return 'z_not_homed', False
+        if status[0].get('control_mode') != 'pixel':
+            return 'z_control_mode_mismatch', False
+        ray = rs.rs2_deproject_pixel_to_point(self.color_intrinsics, self.servo.pixel.tolist(), 1.)
+        direction = self.servo.vertical_pixel_direction(ray, pose[2])
+        if direction is None:
+            return 'uncontrollable_vertical_geometry', False
+        error = float(pixel[1]-self.servo.pixel[1])
+        height = int(image_height)
+        trigger = height*status[0]['trigger_ratio']
+        stop = height*status[0]['stop_ratio']
+        self.diag.update(vertical_error_px=error, z_trigger_px=trigger, z_stop_px=stop,
+                         z_control_mode='pixel', z_depth_required=False)
+        payload = dict(frame_id=self.frame_id, capture_stamp=stamp,
+                       error_px=error, image_height=height, direction_per_error=direction,
+                       track_id=self.servo.track_id)
+        self.z_pub.publish(String(data=json.dumps(payload, allow_nan=False)))
+        if status[0]['xy_inhibited'] or abs(error) >= trigger:
+            # Keep observations flowing during Z moves, but freeze the XY servo
+            # velocity and never generate a backlog of planar targets.
+            self.servo.hold()
+            self.diag['reason'] = 'z_motion_hold'
+            return None, True
+        return None, False
+
+    def _hold(self, reason, xy_only=False):
         self.servo.hold()
+        if reason not in ('confirming_near_depth', 'locking_initial_distance'):
+            self.servo.reject_approach_observation()
         if self.servo.distance is None and reason != 'locking_initial_distance':
             self.servo.depths.clear()
-        self.hold_pub.publish(Empty())
+        if xy_only:
+            self.xy_hold_pub.publish(Empty())
+        else:
+            self.hold_pub.publish(Empty())
         self.diag['reason'] = reason
+        self.diag['hold_scope'] = 'xy_only' if xy_only else 'all_axes'
+        # A single rejected frame can stop Z. The 5-second FPS summary cannot
+        # explain that event, so record its reason and measurements at source.
+        if reason != 'arm_not_ready' and not reason.startswith('harvest_'):
+            now = time.monotonic()
+            times = getattr(self, 'hold_reason_log_times', {})
+            if now-times.get(reason, -math.inf) >= 1.:
+                times[reason] = now
+                self.hold_reason_log_times = times
+                fields = ('capture_stamp', 'observation_age_sec', 'pose_gap_sec',
+                          'track_id', 'detection_count', 'pixel_error', 'depth_m',
+                          'previous_z_depth_m', 'z_phase')
+                context = {key: self.diag.get(key) for key in fields}
+                self.get_logger().warning(
+                    f"Vision hold requested: reason={reason} scope={self.diag['hold_scope']}; "
+                    + json.dumps(context, default=str))
 
     def process_frame(self):
         cycle_start = time.monotonic()
         self.diag = dict(reason='waiting_frame', synthetic=self.synthetic,
                          target_pixel=self.servo.pixel.tolist(), desired_distance_m=self.servo.distance,
-                         goal_yaw_rad=self.servo.yaw, vertical_controlled=False)
+                         goal_yaw_rad=self.servo.yaw, vertical_controlled=getattr(self, 'z_enabled', False))
         allow_approach = self.harvest_allows_vision()
         self.diag['harvest_state'] = getattr(self, 'harvest_mode', 'DISABLED')
         try:
             if self.synthetic:
                 image, depth_image, detections, stamp = self._synthetic_frame()
             else:
-                frames = self.pipeline.poll_for_frames()
+                frames = self.pipeline.poll_for_frames() if self.pipeline is not None else None
                 if not frames:
                     if time.monotonic()-self.last_frame_time > self.target_cfg['observation_max_age_sec']:
                         self._hold('camera_timeout')
-                    if self.window_created:
-                        cv2.waitKey(1)
+                    self._show_status("Waiting for D405 color/depth frames. No arm goal is sent.")
+                    self._maybe_reconnect_camera()
                     return
-                aligned = self.align.process(frames)
+                # RGB-only approach does not require a depth frame to align.
+                aligned = (frames if self.servo.image_approach_enabled and not frames.get_depth_frame()
+                           else self.align.process(frames))
                 color_frame, depth_frame = aligned.get_color_frame(), aligned.get_depth_frame()
-                if not color_frame or not depth_frame:
+                if not color_frame or (not depth_frame and not (
+                        getattr(self, 'z_enabled', False) or self.servo.image_approach_enabled)):
                     self._hold('missing_color_or_depth')
+                    self._show_status("D405 color or depth frame missing; no arm goal is sent.")
+                    self._maybe_reconnect_camera()
                     return
                 image = np.asanyarray(color_frame.get_data()).copy()
-                depth_image = np.asanyarray(depth_frame.get_data())
+                depth_image = np.asanyarray(depth_frame.get_data()) if depth_frame else None
+                self.last_frame_time = time.monotonic()
                 domain = color_frame.get_frame_timestamp_domain()
                 if domain not in (rs.timestamp_domain.system_time, rs.timestamp_domain.global_time):
                     self._hold('camera_timestamp_not_global')
@@ -425,6 +554,7 @@ class RealtimeTomatoDetector(Node):
             selected = self.servo.select(detections, stamp) if can_associate else None
             target, depth_m = None, None
             reason = None
+            xy_only_hold = False
             if not allow_approach:
                 reason = 'harvest_' + self.harvest_mode.lower()
             elif not self.ready:
@@ -437,37 +567,63 @@ class RealtimeTomatoDetector(Node):
                 reason = 'stale_or_unsynchronized_pose'
             elif selected is None:
                 reason = 'target_lost_or_ambiguous'
+            elif self.servo.image_approach_enabled and not self.servo.accept_approach_target():
+                # This must precede _z_observation: previously a reacquired ID
+                # could start Z motion before update_approach rejected its ID.
+                reason = self.servo.approach_fault
+                self.diag.update(track_id=self.servo.track_id,
+                    locked_track_id=self.servo.approach_track_id,
+                    center=list(map(float, selected['center'])),
+                    pixel_error=(np.asarray(selected['center'])-self.servo.pixel).tolist(),
+                    approach_mode=self.servo.approach_mode)
             else:
                 u, v = selected['center']
-                depth_m = self._depth_at(depth_image, u, v, selected['mask'])
+                depth_m = self._depth_at(depth_image, u, v, selected['mask']) if depth_image is not None else None
+                if self.servo.image_approach_enabled:
+                    self.servo.note_approach_depth(depth_m)
                 self.diag.update(track_id=self.servo.track_id, center_source=selected['center_source'],
                                  confidence=selected['confidence'], bbox=list(selected['box']),
                                  center=[float(u), float(v)],
                                  pixel_error=(np.array([u, v])-self.servo.pixel).tolist(), depth_m=depth_m)
-                if depth_m is None:
-                    reason = 'invalid_mask_depth'
-                else:
-                    point = rs.rs2_deproject_pixel_to_point(self.color_intrinsics, [float(u), float(v)], depth_m)
+                z_holds_xy = False
+                if getattr(self, 'z_enabled', False):
+                    # Z uses the 2-D detection independently of depth validity.
+                    reason, z_holds_xy = self._z_observation((u, v), pose, stamp, image.shape[0])
+                if reason is None and not z_holds_xy:
                     ray = rs.rs2_deproject_pixel_to_point(self.color_intrinsics, [float(self.servo.pixel[0]), float(v)], 1.)
-                    target, details = self.servo.update((u, v), point, ray, pose, stamp)
-                    self.diag.update(details)
-                    if target is None:
-                        reason = details['reason']
+                    if self.servo.image_approach_enabled:
+                        observed_ray = rs.rs2_deproject_pixel_to_point(self.color_intrinsics, [float(u), float(v)], 1.)
+                        target, details = self.servo.update_approach((u, v), observed_ray, ray, pose, stamp, depth_m)
+                        self.diag.update(details)
+                        if target is None:
+                            reason = details['reason']
+                            xy_only_hold = getattr(self, 'z_enabled', False)
+                    elif depth_m is None:
+                        reason = 'invalid_mask_depth'
+                        xy_only_hold = getattr(self, 'z_enabled', False)
+                    else:
+                        point = rs.rs2_deproject_pixel_to_point(self.color_intrinsics, [float(u), float(v)], depth_m)
+                        target, details = self.servo.update((u, v), point, ray, pose, stamp)
+                        self.diag.update(details)
+                        if target is None:
+                            reason = details['reason']
+                            xy_only_hold = getattr(self, 'z_enabled', False)
+                    self.diag['vertical_controlled'] = getattr(self, 'z_enabled', False)
+                    mode = self.diag.get('approach_mode')
+                    if mode is not None and mode != getattr(self, 'last_logged_approach_mode', None):
+                        self.last_logged_approach_mode = mode
+                        self.get_logger().info(
+                            f"XY approach mode={mode} depth_m={depth_m} "
+                            f"confirmed={self.servo.depth_control_ready} blind_travel_m={self.servo.blind_travel:.3f}")
             self.last_capture = stamp
             if reason:
-                self._hold(reason)
+                self._hold(reason, xy_only=xy_only_hold)
             elif target is not None:
                 self._publish_goal(target)
                 self.diag['goal_pose'] = target.tolist()
             self._draw(image, detections, selected, target, depth_m)
             self.frame_count += 1
             self.rate_samples.append(time.monotonic()-cycle_start)
-            if time.monotonic()-self.last_rate_log >= 5.:
-                elapsed = time.monotonic()-self.last_rate_log
-                self.get_logger().info(f"vision rate={len(self.rate_samples)/elapsed:.2f}fps "
-                    f"cycle_avg={1000*np.mean(self.rate_samples):.1f}ms reason={self.diag['reason']}")
-                self.last_rate_log = time.monotonic()
-                self.rate_samples.clear()
         except Exception as exc:
             self._hold('camera_or_inference_error')
             self.diag['detail'] = str(exc)
@@ -477,8 +633,22 @@ class RealtimeTomatoDetector(Node):
             self._show_status(str(exc)[:160])
         finally:
             self.diag.update(processing_sec=time.monotonic()-cycle_start,
-                             stamp=self.get_clock().now().nanoseconds/1e9)
-            self.diag_pub.publish(String(data=json.dumps(self.diag, allow_nan=False)))
+                             stamp=self.get_clock().now().nanoseconds/1e9,
+                             camera_frame_age_sec=max(0., time.monotonic()-self.last_frame_time),
+                             camera_reconnect_count=getattr(self, 'camera_reconnect_count', 0))
+            try:
+                self.diag_pub.publish(String(data=json.dumps(self.diag, allow_nan=False)))
+            except _rclpy.RCLError:
+                if rclpy.ok():
+                    raise
+            if time.monotonic()-self.last_rate_log >= 5.:
+                elapsed = time.monotonic()-self.last_rate_log
+                average_ms = 1000*float(np.mean(self.rate_samples)) if self.rate_samples else 0.
+                self.get_logger().info(f"vision rate={len(self.rate_samples)/elapsed:.2f}fps "
+                    f"cycle_avg={average_ms:.1f}ms reason={self.diag['reason']} "
+                    f"frame_age={self.diag['camera_frame_age_sec']:.1f}s")
+                self.last_rate_log = time.monotonic()
+                self.rate_samples.clear()
 
     def _show_status(self, message):
         image = np.zeros((self.height, self.width, 3), dtype=np.uint8)
@@ -509,6 +679,14 @@ class RealtimeTomatoDetector(Node):
     def _draw(self, image, detections, selected, target, depth_m):
         center = tuple(np.rint(self.servo.pixel).astype(int))
         cv2.drawMarker(image, center, (255, 255, 0), cv2.MARKER_CROSS, 24, 2)
+        if getattr(self, 'z_enabled', False):
+            for key, color in (('z_trigger_px', (0, 180, 255)), ('z_stop_px', (0, 200, 0))):
+                band = self.diag.get(key)
+                if band is not None:
+                    for sign in (-1, 1):
+                        y = round(self.servo.pixel[1]+sign*band)
+                        if 0 <= y < image.shape[0]:
+                            cv2.line(image, (0, y), (image.shape[1]-1, y), color, 1)
         for det in detections:
             x1, y1, x2, y2 = [int(round(value)) for value in det["box"]]
             u, v = [int(round(v)) for v in det["center"]]
@@ -519,8 +697,8 @@ class RealtimeTomatoDetector(Node):
             cv2.putText(image, f"tomato {det['confidence']:.2f}", (x1, max(20, y1-6)),
                         cv2.FONT_HERSHEY_SIMPLEX, .55, color, 2)
         text = [f"ID={self.servo.track_id} {self.diag.get('center_source', '-')} {self.diag.get('reason')}",
-                f"pixel error={self.diag.get('pixel_error', '-')} (vertical uncontrolled)",
-                f"depth={depth_m} desired={self.servo.distance}",
+                f"pixel error={self.diag.get('pixel_error', '-')} Zerror={self.diag.get('vertical_error_px', '-')}px",
+                f"{self.servo.approach_mode if self.servo.image_approach_enabled else 'DEPTH'} depth={depth_m} desired={self.servo.distance}",
                 f"target pixel={tuple(self.servo.pixel)} yaw={math.degrees(self.servo.yaw):.1f} deg"]
         for i, line in enumerate(text):
             cv2.putText(image, line, (10, 25+25*i), cv2.FONT_HERSHEY_SIMPLEX, .45, (255,255,255), 1)
@@ -530,8 +708,7 @@ class RealtimeTomatoDetector(Node):
 
     def destroy_node(self):
         try:
-            if self.pipeline is not None:
-                self.pipeline.stop()
+            self._stop_camera()
         finally:
             if self.window_created:
                 cv2.destroyAllWindows()
@@ -551,8 +728,11 @@ def main(args=None):
         def receive():
             try:
                 executor.spin()
-            except (ExternalShutdownException, rclpy.exceptions.RCLError):
+            except ExternalShutdownException:
                 pass
+            except _rclpy.RCLError:
+                if rclpy.ok():
+                    raise
         worker = threading.Thread(target=receive, daemon=True)
         worker.start()
         deadline = time.monotonic()
@@ -564,6 +744,9 @@ def main(args=None):
                 deadline = time.monotonic()
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except _rclpy.RCLError:
+        if rclpy.ok():
+            raise
     finally:
         # Stop subscriptions before destroying node; GUI cleanup remains on main.
         if executor is not None:

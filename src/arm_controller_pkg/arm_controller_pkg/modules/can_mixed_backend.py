@@ -170,7 +170,10 @@ class _RmdSerialBridge:
 class _DynamixelQ3:
     """Single ID-5 adapter retaining the previous q3 mapping and limits."""
 
-    def __init__(self, params):
+    def __init__(self, params, *, angle_trim_deg=0.0):
+        self.angle_trim_deg = float(angle_trim_deg)
+        if not math.isfinite(self.angle_trim_deg):
+            raise ValueError("q3 angle_trim_deg must be finite")
         try:
             from dynamixel_sdk import PortHandler, PacketHandler, COMM_SUCCESS
             from serial.tools import list_ports
@@ -293,17 +296,23 @@ class _DynamixelQ3:
 
     def read_joint(self):
         tick = self._read(int(self.params["ADDR_PRESENT_POSITION"]), 4)
+        joint = self.joint_from_tick(tick)
+        angle = (tick-self.min_tick)/(self.max_tick-self.min_tick)*self.max_angle
+        if not self.min_deg-0.5 <= angle <= self.max_deg+0.5:
+            raise RuntimeError(f"DXL q3 angle {angle:.2f}deg outside configured range")
+        return joint
+
+    def joint_from_tick(self, tick):
+        """Convert the raw single-turn encoder value to calibrated joint radians."""
         if not self.min_tick <= tick <= self.max_tick:
             raise RuntimeError(f"DXL q3 present position {tick} outside encoder range")
         angle = (tick-self.min_tick)/(self.max_tick-self.min_tick)*self.max_angle
-        joint = angle - 180.0
-        if not self.min_deg-0.5 <= angle <= self.max_deg+0.5:
-            raise RuntimeError(f"DXL q3 angle {angle:.2f}deg outside configured range")
+        joint = angle - 180.0 + self.angle_trim_deg
         return math.radians(joint)
 
     def send_joint(self, joint_rad):
         q3 = math.degrees(float(joint_rad))
-        motor_angle = q3 + 180.0
+        motor_angle = q3 + 180.0 - self.angle_trim_deg
         if not math.isfinite(motor_angle) or not self.min_deg <= motor_angle <= self.max_deg:
             raise ValueError(f"q3 target {motor_angle:.2f}deg outside {self.min_deg}..{self.max_deg}")
         tick = round(self.min_tick + motor_angle/self.max_angle*(self.max_tick-self.min_tick))
@@ -328,6 +337,9 @@ class CanMixedMotorBackend:
         self.motor_bounds = None
         self.max_speed_dps = int(self.params.get("max_command_speed_dps", 15))
         self.bridge_timeout = float(self.params.get("communication_timeout_sec", 0.8))
+        self.q3_trim_deg = float(self.params.get("q3", {}).get("angle_trim_deg", 0.0))
+        if not math.isfinite(self.q3_trim_deg):
+            raise ValueError("q3 angle_trim_deg must be finite")
         if not 1 <= self.max_speed_dps <= 60 or not math.isfinite(self.bridge_timeout) or self.bridge_timeout <= 0:
             raise ValueError("invalid CAN bridge speed or timeout")
 
@@ -339,12 +351,16 @@ class CanMixedMotorBackend:
         motor_ref = axis.get("reference_motor_cdeg")
         if direction not in (-1, 1) or q_ref is None or motor_ref is None:
             return None
-        values = [float(q_ref), float(motor_ref)]
+        trim = float(axis.get("angle_trim_deg", 0.0))
+        values = [float(q_ref), float(motor_ref), trim]
         if not all(math.isfinite(v) for v in values):
-            raise ValueError(f"{name} calibration reference must be finite")
-        # Motor output angle = zero offset + direction * joint angle.
+            raise ValueError(f"{name} calibration reference and angle_trim_deg must be finite")
+        # q = q_ref + direction*(raw-raw_ref)/100 + trim.
+        # Put trim into the effective zero so reads, inverse commands and
+        # bridge bounds all use exactly the same calibration.
         return {"direction": int(direction), "reference_joint_deg": values[0],
-                "zero_cdeg": values[1] - direction * values[0] * 100.0}
+                "angle_trim_deg": trim,
+                "zero_cdeg": values[1] - direction * (values[0] + trim) * 100.0}
 
     def _read_rmd(self):
         state = self.bridge.read()
@@ -407,7 +423,7 @@ class CanMixedMotorBackend:
         # is issued later by the tracker's single control-timer owner.
         self.bridge.configure_and_arm(self.motor_bounds)
         try:
-            self.q3 = _DynamixelQ3(self.dxl_params)
+            self.q3 = _DynamixelQ3(self.dxl_params, angle_trim_deg=self.q3_trim_deg)
             q3_id = self.q3.activate()
         except Exception:
             self.bridge.stop()
@@ -426,11 +442,12 @@ class CanMixedMotorBackend:
                 raise RuntimeError("Arduino bridge is disarmed")
             q1 = self._joint_from_position(state["x8_position_cdeg"], "q1")
             q2 = self._joint_from_position(state["x6_position_cdeg"], "q2")
-            for index, q in enumerate((q1, q2)):
+            q3 = self.q3.read_joint()
+            for index, q in enumerate((q1, q2, q3)):
                 low, high = self.joint_limits_rad[index]
                 if q < low-math.radians(0.5) or q > high+math.radians(0.5):
                     raise RuntimeError(f"q{index+1} measured angle {math.degrees(q):.2f}deg outside joint limits")
-            return [q1, q2, self.q3.read_joint()]
+            return [q1, q2, q3]
         except Exception:
             self._safe_stop()
             raise

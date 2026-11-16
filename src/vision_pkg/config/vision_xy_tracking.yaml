@@ -1,0 +1,284 @@
+# vision_xy_tracking.launch.py の設定をこの1ファイルに集約。
+# ROSインターフェース: m / rad。*_deg と Link1..4 は deg / mm。
+# 起動引数は launch: の値を上書きする。実機動作は backend:=can_mixed を明示。
+# 旧3ファイルは別launch・単独ノード用。このlaunchは旧ファイルを参照しない。
+config_schema: vision_xy_tracking/v1
+
+# ---- 起動オプション（従来の既定値を維持） ----
+launch:
+  backend: sim
+  # configured + Z有効: 起動ごとにZ原点復帰 → XY home → demo → 追従。
+  # current: Z自動原点復帰なし。未原点なら /arm_xy/z/home の要求を待つ。
+  startup_mode: configured
+  synthetic_camera: false
+  show_window: true
+  z_tracking_enabled: false
+  harvest_cycle_enabled: true
+  require_ee_ready: false
+
+# ---- ROS制御パラメーター：10Hz、速度・加速度、IK補正分解能 ----
+tracking:
+  control_rate_hz: 10.0
+  goal_topic: /arm_xy/goal
+  frame_id: arm_base
+  goal_timeout_sec: 0.5
+  stamp_max_age_sec: 2.0
+  stamp_future_tolerance_sec: 0.2
+  max_goal_xy_m: 1.0
+  plane_z_m: 0.0
+  max_joint_velocity_rad_s: 0.25
+  max_joint_acceleration_rad_s2: 0.8
+  # Small visual-servo targets must not be swallowed by a 20 mm IK tolerance.
+  tracking_position_tolerance_m: 0.0001
+  tracking_angle_tolerance_rad: 0.001
+  # Numerical correction resolution is independent of arrival/acceptance tolerance.
+  tracking_correction_resolution_m: 0.0001
+  tracking_correction_resolution_rad: 0.001
+  max_following_error_rad: 0.15
+  control_conflict_services: ["/arm_service", "/arm_service_d435"]
+
+# ---- ロボット：初期姿勢・Z補正・リンク・関節制限・通信・到達判定 ----
+# 下のbackendは単独アームノード用の既定値。このlaunchの選択はlaunch.backend。
+backend: sim
+# A neutral simulated pose with margin for the default 50 mm test circle.
+initial_joints_deg: [9.38866738, 93.87929147, -38.57742594]
+startup:
+  # Configured joint-space startup targets, not calibration references.
+  home_joints_deg: [10.0, 110.0, -30.0]
+  # Configured demo yaw=100 deg; camera angular reference is a separate calibration.
+  demo_joints_deg: [10.0, 110.0, -30.0]
+  minimum_segment_duration_sec: 3.0
+  segment_timeout_sec: 60.0
+  arrival_tolerance_rad: 0.017453292519943295
+simulator:
+  sim_max_joint_speed_rad_s: 0.8
+# Pixel-band Z correction; enable explicitly with z_tracking_enabled:=true.
+# Real hardware requires module/pico_programs/z_axis_motor/z_axis_tracking firmware.
+z_tracking:
+  serial_number: "E6613008E3567336"  # Z Pico, from module/set_params.yaml.
+  baudrate: 115200
+  trigger_ratio: 0.10  # Begin at >= 1/10 of the actual image height.
+  stop_ratio: 0.05     # Continue until <= 1/20; no depth conversion.
+  step_m: 0.005        # Bounded move, reobserve before the next one.
+  max_cycle_travel_m: 0.100
+  speed_m_s: 0.010
+  min_position_m: 0.005          # 動作下限：原点から5mm
+  max_position_m: 0.450          # 動作上限：原点から450mm
+  observation_timeout_sec: 0.30
+  communication_timeout_sec: 0.60
+  xy_stop_speed_rad_s: 0.02
+  # q3 is ~0.088 deg/count. Use a bounded post-hold position window,
+  # not only a 100ms derivative that amplifies 1-2 counts of quantization.
+  xy_stop_window_sec: 0.50
+  xy_stop_position_tolerance_rad: 0.0035
+  xy_stop_max_sample_gap_sec: 0.25
+  xy_stop_samples: 3
+  xy_stop_timeout_sec: 5.0
+  settle_sec: 0.30
+  move_timeout_sec: 30.0
+  home_timeout_sec: 120.0
+  sim_initial_position_m: 0.225
+  sim_homed: true
+ik_solver_params:
+  Link1: 200.0
+  Link2: 0.0  # Fixed transverse offset removed from the assembled mechanism.
+  Link3: 180.0  # Physical second link: q2 axis to q3 axis, operator measured.
+  Link4: 150.0
+  MAX_LOOP_NUM: 80
+  GOAL_DIS: 0.01
+  GOAL_ANG: 0.05
+  position_tolerance_m: 0.002
+  angle_tolerance_rad: 0.017453292519943295
+  max_joint_step_rad: 0.08
+  damping: 0.025
+  angle_length_m: 0.15
+# Joint-space limits retained from the existing five-Dynamixel mapping:
+# q1=[DXL1 80..270]-90, q2=[DXL3 60..265]-90, q3=[DXL5 15..315]-180.
+# These are configured software limits; confirm the mechanical envelope after
+# changing the first two actuators.
+joint_limits_deg:
+  - [5.0, 175.0] #q1
+  - [-30.0, 175.0] #q2
+  - [-150.0, 120.0] #q3
+# q1/q2 CAN adapter through Arduino Uno R3. Assembly calibration measured
+# with base/q2/q3 axes collinear along +Y: q1=90 deg, q2=q3=0 deg.
+can_mixed_backend:
+  arduino_serial_number: "24236323730351504241"
+  baudrate: 115200
+  communication_timeout_sec: 0.8
+  max_command_speed_dps: 15
+  calibration_valid: true
+  # q[deg] = reference_joint_deg + direction*(raw_cdeg-reference_motor_cdeg)/100
+  #          + angle_trim_deg. Positive trim increases reported joint angle.
+  # Changing these values requires restarting all CAN-mixed arm programs.
+  q1:
+    direction: -1  # Verified: positive 0xA4 angle produced increasing 0x92 angle.
+    reference_joint_deg: 90.0
+    reference_motor_cdeg: -11000  # Operator measured raw=-110 deg at +Y straight.
+    angle_trim_deg: 0.0
+  q2:
+    direction: -1  # Verified: positive 0xA4 angle produced increasing 0x92 angle.
+    reference_joint_deg: 0.0
+    reference_motor_cdeg: 17000  # Operator measured raw=170 deg at +Y straight.
+    angle_trim_deg: 0.0
+  q3:
+    # q3[deg] = Dynamixel_motor_deg - 180 + angle_trim_deg.
+    # Operator measured existing q3 display=0 deg at the same +Y straight pose.
+    angle_trim_deg: 0.0
+dxl_params:
+  U2D2_SERIAL_NUMBER: "FTAK87XF"
+  BAUDRATE: 4000000
+  PROTOCOL_VERSION: 2.0
+  DXL_IDs: [1, 2, 3, 4, 5]
+  q3_motor_id: 5
+  ADDR_TORQUE_ENABLE: 64
+  ADDR_OPERATING_MODE: 11
+  ADDR_DRIVE_MODE: 10
+  ADDR_GOAL_POSITION: 116
+  LEN_GOAL_POSITION: 4
+  ADDR_PRESENT_POSITION: 132
+  LEN_PRESENT_POSITION: 4
+  ADDR_PROFILE_ACCEL: 108
+  ADDR_PROFILE_VELO: 112
+  PROFILE_ACCELS: [7, 7, 7, 7, 7]
+  # Verify profile units and safe values for the installed actuator model.
+  stream_profile_velocities: [30, 30, 30, 30, 30]
+  DXL_MIN_POSITION_VALUE: 0
+  DXL_MAX_POSITION_VALUE: 4095
+  MAX_ANGLE: 360.0
+  DXL_1_MIN_DEG: 80.0
+  DXL_1_MAX_DEG: 270.0
+  DXL_2_MIN_DEG: 90.0
+  DXL_2_MAX_DEG: 280.0
+  DXL_3_MIN_DEG: 60.0
+  DXL_3_MAX_DEG: 265.0
+  DXL_4_MIN_DEG: 95.0
+  DXL_4_MAX_DEG: 300.0
+  DXL_5_MIN_DEG: 15.0
+  DXL_5_MAX_DEG: 315.0
+  communication_timeout_ms: 40
+  # Startup-only Goal Position readback polling (not an arrival wait).
+  startup_readback_timeout_ms: 100
+  # Only 0 (strict) or 1 encoder count. See README for current-position checks.
+  startup_hold_tolerance_ticks: 1
+
+# The vision launch enables this cycle; circle/legacy tracker defaults stay disabled.
+harvest_cycle:
+  # Keep the measured visual/distance/yaw checks, but allow typical target
+  # motion and tracker lag between the latest goal and measured FK.
+  arrival_pixel_tolerance_px: 50.0
+  arrival_distance_tolerance_m: 0.01
+  arrival_goal_pose_tolerance_m: 0.05
+  arrival_joint_speed_rad_s: 0.1
+  arrival_yaw_tolerance_rad: 0.1
+  settle_sec: 0.6
+  observation_timeout_sec: 0.25
+  ee_timeout_sec: 1.0
+  # Return directly to startup.demo_joints_deg; no automatic Z/EE movement.
+  return_min_duration_sec: 3.0
+  return_timeout_sec: 60.0
+  return_tolerance_rad: 0.017453292519943295
+
+# ---- 画像：D405・モデル・目標画素・接近速度・距離制御 ----
+processing_rate_hz: 15.0
+window_name: "D405 tomato realtime"
+
+camera:
+  # If empty, select the unique RealSense device whose USB product ID is 0b5b.
+  serial_number: ""
+  usb_product_id: "0b5b"
+  width: 640
+  height: 480
+  fps: 30
+  # Reopen a pipeline that no longer delivers frames after USB disconnect.
+  frame_timeout_sec: 2.0
+  reconnect_interval_sec: 3.0
+
+detector:
+  # Relative to this YAML: ../../../module/weights/base.pt
+  weights: "../../../module/weights/base.pt"
+  tomato_class_name: "tomato"
+  confidence: 0.25
+  iou: 0.45
+  image_size: 640
+  # auto chooses CUDA device 0 when available, otherwise CPU.
+  device: "auto"
+
+target:
+  actual_topic: "/arm_xy/actual"
+  goal_topic: "/arm_xy/goal"
+  frame_id: "arm_base"
+  fixed_z_m: 0.0
+  # Arm startup reference pose: demo_joints_deg [5, 150.4, -55.4] gives yaw=100 deg.
+  # At this pose, camera optical forward is defined as arm_base +Y.
+  camera_reference_yaw_deg: 100.0
+  actual_max_age_sec: 0.25
+  max_depth_m: 2.0
+  depth_patch_radius_px: 5
+  # Homogeneous transform from D405 optical coordinates (right, down, forward)
+  # into the XY axes defined at camera_reference_yaw_deg. The XY transform is
+  # rotated by live_yaw - camera_reference_yaw_deg, so optical forward maps to
+  # arm_base +Y at the configured startup pose.
+  # Translation is camera origin relative to tool, in the reference axes (m).
+  # Relative servo displacement uses rotation only; translation cancels.
+  # The matrix translation/rotation still needs calibration for the actual mount.
+  camera_to_end_effector:
+    - [1.0, 0.0,  0.0,  0.000]
+    - [0.0, 0.0,  1.0, 0.000]
+    - [0.0, -1.0, 0.0,  0.000] #0.110
+    - [0.0, 0.0,  0.0,  1.000]
+  # Tool target yaw is independent of camera angular calibration.
+  goal_yaw_deg: 90.0  # Fixed to sum(startup.demo_joints_deg): 10+110-20.
+  # null = geometric image center ((width-1)/2, (height-1)/2), NOT principal point.
+  target_pixel: null
+  # Horizontal shift from target_pixel (or image center when null). + moves right, - moves left.
+  target_pixel_offset_x_px: 50.0
+  # Vertical offset: + moves the target down, - moves it up. 0 = image center.
+  target_pixel_offset_y_px: 0.0
+  # 0 = lock median of first stable depth samples after arm ready.
+  desired_distance_m: 0.15
+  # Far target: use pixels for lateral alignment and command a bounded forward
+  # speed, then switch to depth control after stable NEAR measurements.
+  image_approach:
+    enabled: true
+    forward_speed_m_s: 0.04
+    lateral_gain_m_s_per_rad: 0.25
+    forward_gate_ratio: 0.25
+    max_speed_m_s: 0.06
+    max_acceleration_m_s2: 0.15
+    goal_horizon_sec: 0.25
+    max_step_m: 0.015
+    max_blind_travel_m: 0.20
+    max_blind_time_sec: 15.0
+    travel_deadband_m: 0.001
+    depth_switch_max_m: 0.35
+    depth_confirm_frames: 3
+    depth_confirm_spread_m: 0.015
+    depth_switch_hysteresis_m: 0.03
+    depth_control_max_speed_m_s: 0.04
+  stable_depth_frames: 6
+  stable_depth_spread_m: 0.005
+  gain_per_sec: 20.0
+  pixel_deadband_px: 3.0
+  distance_deadband_m: 0.004
+  max_speed_m_s: 1.0
+  max_acceleration_m_s2: 0.8
+  max_step_m: 0.15
+  min_depth_m: 0.07
+  depth_spread_m: 0.015
+  depth_jump_m: 0.035
+  observation_max_age_sec: 0.25
+  pose_sync_tolerance_sec: 0.12
+  tracking_confidence: 0.45
+  association_gate_px: 45.0
+  ambiguity_margin_px: 8.0
+  # Shape plausibility only, not a semantic guarantee against hands/background.
+  min_bbox_aspect: 0.5
+  max_bbox_aspect: 2.0
+  min_bbox_area_px: 80.0
+  max_bbox_area_px: 70000.0
+  lost_timeout_sec: 1.5
+
+simulation:
+  # Fixed 3D point initialized once in the camera at startup; then WORLD-fixed.
+  initial_target_camera_m: [0.025, 0.015, 0.25]

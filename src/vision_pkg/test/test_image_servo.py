@@ -12,6 +12,7 @@ from arm_controller_pkg.modules.yaw_joint_limiter import joint_step
 ROOT = Path(__file__).resolve().parents[3]
 CONFIG = ROOT/'src/vision_pkg/config/realtime_detector.yaml'
 CFG = dict(yaml.safe_load(CONFIG.read_text())['target'], target_pixel=None,
+           goal_yaw_deg=100.,
            target_pixel_offset_x_px=0., desired_distance_m=0., gain_per_sec=2.,
            max_speed_m_s=.025, max_acceleration_m_s2=.08, max_step_m=.003)
 ARM = yaml.safe_load((ROOT/'src/arm_controller_pkg/config/xy_robot_config.yaml').read_text())
@@ -25,7 +26,9 @@ def solver(**kwargs):
 def closed_loop(offset, vertical=0., depth=.25, seconds=60):
     servo = ImageServo(dict(CFG, desired_distance_m=.25), 640, 480)
     ik = solver()
-    q = np.radians([5., 160., -65.]); command=q.copy(); vel=np.zeros(3)
+    # Fixed synthetic fixture with margin for the assembled 200/200 mm links.
+    # Keep its 100 deg yaw independent of the operator's startup YAML.
+    q = np.radians([20., 100., -20.]); command=q.copy(); vel=np.zeros(3)
     initial=ik.forward_kinematics(q)
     world=np.r_[initial[:2], 0.]+servo.camera_rotation(initial[2])@np.array([
         offset-.5*depth/600, vertical-.5*depth/600, depth])
