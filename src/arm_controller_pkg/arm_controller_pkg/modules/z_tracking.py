@@ -8,12 +8,20 @@ import time
 from collections import deque
 
 
+def _home_speed(config):
+    speed = float(config.get('home_speed_m_s', .005))
+    if not math.isfinite(speed) or not .0005 <= speed <= .020:
+        raise ValueError('z_tracking.home_speed_m_s must be within 0.0005..0.020 m/s')
+    return speed
+
+
 class SimulatedZBackend:
     def __init__(self, config):
         self.position = float(config.get('sim_initial_position_m', .225))
         self.homed = bool(config.get('sim_homed', True))
         self.target = self.position
         self.speed = float(config.get('speed_m_s', .01))
+        self.home_speed = _home_speed(config)
         self.busy = False
         self.command_id = 0
         self.last = None
@@ -27,7 +35,8 @@ class SimulatedZBackend:
         if abs(self.target-self.position) < 1e-8:
             self.busy = False
         self.state = dict(position_m=self.position, homed=self.homed, busy=self.busy,
-                          command_id=self.command_id, fault='NONE', position_source='simulated')
+                          command_id=self.command_id, fault='NONE', position_source='simulated',
+                          received_monotonic=now)
         return self.state
 
     def move(self, target, speed):
@@ -37,7 +46,7 @@ class SimulatedZBackend:
 
     def home(self):
         self.homed = True
-        return self.move(.005, .01)
+        return self.move(.005, self.home_speed)
 
     def stop(self):
         self.target = self.position
@@ -50,6 +59,8 @@ class SimulatedZBackend:
 class SerialZBackend:
     """Requires z_axis_tracking firmware; never falls back to legacy motion."""
     def __init__(self, config):
+        self.home_speed = _home_speed(config)
+        self.configurable_home_speed = 'home_speed_m_s' in config
         import serial
         from serial.tools import list_ports
         matches = [p for p in list_ports.comports()
@@ -99,7 +110,8 @@ class SerialZBackend:
                 raise RuntimeError(f'Z pulse-count position out of range: {steps}')
             self.state = dict(position_m=steps/200000., homed=bool(homed), busy=bool(busy),
                               powered=True, limit_active=bool(limit), command_id=command,
-                              fault=parts[8], position_source='pulse_count_estimate')
+                              fault=parts[8], position_source='pulse_count_estimate',
+                              received_monotonic=now)
             self.last_received = now
             if parts[8] != 'NONE':
                 raise RuntimeError(f"Z firmware fault: {parts[8]}")
@@ -115,7 +127,10 @@ class SerialZBackend:
 
     def home(self):
         self.command_id += 1
-        self._write(f'ZHOME,{self.command_id}')
+        command = f'ZHOME,{self.command_id}'
+        if self.configurable_home_speed:
+            command += f',{self.home_speed*1000:.3f}'
+        self._write(command)
         return self.command_id
 
     def stop(self):
@@ -323,6 +338,10 @@ class PixelZTrackingCoordinator(ZTrackingCoordinator):
         if (not self.cfg['stop_ratio'] < self.cfg['trigger_ratio'] <= 1. or
                 self.cfg['step_m'] < .001 or self.cfg['step_m'] > self.cfg['max_cycle_travel_m']):
             raise ValueError('invalid pixel bands or Z step/travel bounds')
+        samples = config.get('observation_recovery_samples', 3)
+        if isinstance(samples, bool) or not isinstance(samples, int) or not 1 <= samples <= 30:
+            raise ValueError('z_tracking.observation_recovery_samples must be an integer in 1..30')
+        self.cfg['observation_recovery_samples'] = samples
         self.pixel_meta = None
         self.active_track_id = None
         self.cycle_started = None
@@ -332,6 +351,117 @@ class PixelZTrackingCoordinator(ZTrackingCoordinator):
         self.stop_reference = None
         self.xy_hold_target = None
         self.stop_check = dict(ready=False, blocking_joints=[], reason='not_waiting')
+        self.observation_hold_pending = None
+        self.observation_hold_started = None
+        self.observation_stop_confirmed = False
+        self.recovery_samples = 0
+        self.recovery_stamp = None
+        self.sequence_action = None
+
+    def step_sequence(self, now, ros_now, joints, action, lift_m=0.):
+        """Measured-stop -> bounded lift/home -> settling, owned by harvest.
+
+        Runs only in the tracker I/O timer; visual observations never drive this
+        operation. Return True only when firmware completion and settling agree.
+        """
+        self.state = self.backend.tick(now)
+        if self.phase == 'FAULT':
+            return False
+        if self.stop_pending:
+            self.fail(self.stop_reason or 'explicit_stop_during_sequence_z')
+            return False
+        if self.state is None:
+            return False
+        if self.state.get('fault', 'NONE') != 'NONE':
+            self.fail(self.state['fault'])
+            return False
+        if self.sequence_action is None:
+            if self.phase != 'IDLE' or action not in ('lift', 'home'):
+                self.fail('sequence_z_requires_idle_coordinator')
+                return False
+            if not math.isfinite(lift_m) or lift_m < 0:
+                self.fail('invalid_sequence_z_lift')
+                return False
+            if action == 'lift':
+                if not self.state['homed']:
+                    self.fail('sequence_z_lift_requires_homed_axis')
+                    return False
+                self.target = round((self.state['position_m']+lift_m)*1000)/1000
+                if not self.cfg['min_position_m'] <= self.target <= self.cfg['max_position_m']:
+                    self.fail('sequence_z_lift_outside_configured_limits')
+                    return False
+            else:
+                self.target = None
+            self.sequence_action = action
+            self.phase, self.phase_started = 'STOPPING_XY', now
+            self.reason = 'sequence_z_waiting_for_xy_stop'
+            self.observation = None
+            self.cycle_started = None
+            self.observation_hold_pending = None
+            self.stopped_samples = 0
+            self._reset_stop_measurement(joints, now)
+        if action != self.sequence_action:
+            self.fail('sequence_z_action_changed')
+            return False
+        if (self.phase in ('SEQUENCE_LIFT', 'SEQUENCE_HOMING', 'SEQUENCE_SETTLING') and
+                self.stop_reference is not None and
+                max(abs(q-ref) for q, ref in zip(joints, self.stop_reference)) >
+                self.cfg['xy_stop_position_tolerance_rad']):
+            self.fail('sequence_z_xy_hold_position_changed')
+            return False
+        if self.phase == 'STOPPING_XY':
+            stationary = self._stationary(joints, now)
+            self.stopped_samples = self.stopped_samples+1 if stationary else 0
+            if now-self.phase_started > self.cfg['xy_stop_timeout_sec']:
+                self.fail('xy_failed_to_stop')
+            elif self.stopped_samples >= self.cfg['xy_stop_samples']:
+                self.active_id = (self.backend.home() if action == 'home' else
+                                  self.backend.move(self.target, self.cfg['speed_m_s']))
+                self.phase, self.phase_started = ('SEQUENCE_HOMING' if action == 'home' else 'SEQUENCE_LIFT'), now
+                self.reason = 'sequence_z_'+action+'_xy_held'
+            return False
+        if self.phase in ('SEQUENCE_LIFT', 'SEQUENCE_HOMING'):
+            timeout = self.cfg['home_timeout_sec'] if action == 'home' else self.cfg['move_timeout_sec']
+            if now-self.phase_started > timeout:
+                self.fail('sequence_z_motion_timeout')
+            elif self.state['command_id'] == self.active_id and not self.state['busy']:
+                if (not self.state['homed'] or
+                        not self.cfg['min_position_m'] <= self.state['position_m'] <= self.cfg['max_position_m'] or
+                        (action == 'lift' and abs(self.state['position_m']-self.target) > .0011)):
+                    self.fail('sequence_z_completion_mismatch')
+                else:
+                    self.target = self.state['position_m']
+                    self.phase, self.phase_started = 'SEQUENCE_SETTLING', now
+                    self.reason = 'sequence_z_'+action+'_settling'
+            return False
+        if self.phase == 'SEQUENCE_SETTLING':
+            if self.state['busy'] or not self.state['homed'] or abs(self.state['position_m']-self.target) > .0011:
+                self.fail('sequence_z_unstable_after_stop')
+            elif now-self.phase_started >= self.cfg['settle_sec']:
+                self.phase, self.reason = 'IDLE', 'sequence_z_'+action+'_complete'
+                self.sequence_action = None
+                self.observation = None
+                self.epoch_ros = ros_now
+                self.homing = False
+                return True
+        return False
+
+    def request_observation_hold(self, reason):
+        """Callback side: record a request; only step() performs motor I/O."""
+        if not self.homing and not self.home_pending and self.phase not in ('FAULT', 'NEEDS_HOME', 'WAITING_STATUS'):
+            self.observation_hold_pending = str(reason)
+
+    def _hold_for_observation(self, now, ros_now, reason):
+        if self.phase != 'OBSERVATION_HOLD':
+            self.backend.stop()
+            self.observation_hold_started = now
+            self.observation_stop_confirmed = False
+            self.phase, self.phase_started = 'OBSERVATION_HOLD', now
+        self.reason = 'observation_hold:'+str(reason)
+        self.observation = None
+        self.epoch_ros = ros_now
+        self.recovery_samples = 0
+        self.recovery_stamp = None
 
     def _reset_stop_measurement(self, joints, now):
         self.stop_reference = list(joints if self.xy_hold_target is None else self.xy_hold_target)
@@ -446,6 +576,49 @@ class PixelZTrackingCoordinator(ZTrackingCoordinator):
             if self.owns_xy:
                 self.fail('harvest_or_controller_owns_arm')
             return self.owns_xy
+        if self.observation_hold_pending is not None:
+            self._hold_for_observation(now, ros_now, self.observation_hold_pending)
+            self.observation_hold_pending = None
+        if self.phase == 'OBSERVATION_HOLD':
+            # Keep XY held throughout loss, and prove Z has stopped before
+            # accepting a new image. Never complete an old in-flight segment.
+            awaiting_stop = (self.state['busy'] or
+                self.state.get('received_monotonic', now) <= self.phase_started or
+                (self.cycle_started is not None and self.state['command_id'] != self.active_id))
+            if awaiting_stop:
+                if now-self.phase_started > self.cfg['move_timeout_sec']:
+                    self.fail('z_observation_hold_failed_to_stop')
+                return True
+            if not self.observation_stop_confirmed:
+                self.observation_stop_confirmed = True
+                self.epoch_ros = ros_now
+                self.observation = None
+                return True
+            if not self._fresh(now, ros_now):
+                self.recovery_samples = 0
+                self.recovery_stamp = None
+                return True
+            if self.observation[1] != self.recovery_stamp:
+                self.recovery_samples += 1
+                self.recovery_stamp = self.observation[1]
+            if self.recovery_samples < self.cfg['observation_recovery_samples']:
+                return True
+            if self.cycle_started is not None:
+                if self.pixel_meta['track_id'] != self.active_track_id:
+                    self.fail('target_identity_changed_during_z')
+                    return True
+                # Time spent stopped without observations is not motion time.
+                # Retain the cycle's travel budget and original target identity.
+                self.cycle_started += now-self.observation_hold_started
+            elif abs(self.observation[0]) < self.cfg['trigger_ratio']:
+                self.phase, self.reason = 'IDLE', 'observation_recovered_waiting_fresh_goal'
+                return False
+            else:
+                self.active_track_id = self.pixel_meta['track_id']
+                self.cycle_travel = 0.
+            self.phase, self.phase_started = 'STOPPING_XY', now
+            self.stopped_samples = 0
+            self._reset_stop_measurement(joints, now)
         stationary = self._stationary(joints, now)
         fresh = self._fresh(now, ros_now)
         if self.phase == 'IDLE':
@@ -466,11 +639,16 @@ class PixelZTrackingCoordinator(ZTrackingCoordinator):
             self.stopped_samples = self.stopped_samples+1 if stationary else 0
             if self.stopped_samples < self.cfg['xy_stop_samples']:
                 return True
-            if not fresh or abs(self.observation[0]) <= self.cfg['stop_ratio']:
+            if not fresh:
+                self._hold_for_observation(now, ros_now, 'pixel_observation_expired_before_move')
+                return True
+            if abs(self.observation[0]) <= self.cfg['stop_ratio']:
                 self.phase, self.reason = 'IDLE', 'z_not_started_observation_expired_or_inside_band'
+                self.cycle_started = None
                 return False
             self.active_track_id = self.pixel_meta['track_id']
-            self.cycle_started = now
+            if self.cycle_started is None:
+                self.cycle_started = now
             self._begin_segment(now)
         if self.cycle_started is not None:
             if now-self.cycle_started > self.cfg['move_timeout_sec']:
@@ -479,7 +657,7 @@ class PixelZTrackingCoordinator(ZTrackingCoordinator):
             if self.phase in ('MOVING_Z', 'STOPPING_Z', 'WAITING_IMAGE', 'SETTLING') and not fresh:
                 # A completed segment explicitly clears the old observation.
                 if self.phase != 'WAITING_IMAGE' or now-self.phase_started > self.cfg['observation_timeout_sec']:
-                    self.fail('pixel_observation_lost_during_z')
+                    self._hold_for_observation(now, ros_now, 'pixel_observation_lost_during_z')
                     return True
         if self.phase == 'MOVING_Z':
             error = self.observation[0]
@@ -527,6 +705,9 @@ class PixelZTrackingCoordinator(ZTrackingCoordinator):
                     stop_px=None if height is None else height*self.cfg['stop_ratio'],
                     error_px=None if self.observation is None else meta.get('error_px'),
                     track_id=self.active_track_id, cycle_travel_m=self.cycle_travel,
+                    sequence_action=self.sequence_action,
+                    recovery_samples=self.recovery_samples,
+                    required_recovery_samples=self.cfg['observation_recovery_samples'],
                     xy_inhibited=self.owns_xy, homed=False if self.state is None else self.state['homed'],
                     position_m=None if self.state is None else self.state['position_m'],
                     position_source=None if self.state is None else self.state.get('position_source'),

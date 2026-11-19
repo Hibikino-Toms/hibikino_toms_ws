@@ -24,6 +24,7 @@ z_tracking:
   min_position_m: 0.005
   max_position_m: 0.450
   observation_timeout_sec: 0.30
+  observation_recovery_samples: 3
   communication_timeout_sec: 0.60
   xy_stop_speed_rad_s: 0.02
   # q3 is ~0.088 deg/count. Use a bounded post-hold position window,
@@ -117,7 +118,7 @@ dxl_params:
   DXL_5_MAX_DEG: 315.0
   communication_timeout_ms: 40
   # Startup-only Goal Position readback polling (not an arrival wait).
-  startup_readback_timeout_ms: 100
+  startup_readback_timeout_ms: 250
   # Only 0 (strict) or 1 encoder count. See README for current-position checks.
   startup_hold_tolerance_ticks: 1
 

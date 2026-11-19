@@ -2,7 +2,68 @@
 
 ## このlaunchの設定ファイル（統合済み）
 
-`vision_xy_tracking.launch.py` は **`src/vision_pkg/config/vision_xy_tracking.yaml` の1ファイル**から設定を読みます。アームとvisionの両ノードに同じファイルを渡すため、一時ファイルへの分割はしません。従来の数値は維持しています。
+`vision_xy_tracking.launch.py` は **`src/vision_pkg/config/vision_xy_tracking.yaml` の1ファイル**から設定を読みます。自動収穫時は既存の `auto_harvest` EEノードも起動し、アーム・vision・EEの3ノードへ同じファイルを渡します。
+
+## 到達後の自動収穫サイクル（2026-11-17変更）
+
+```text
+起動: EE原点復帰・初期化 → Z原点復帰 → XY初期姿勢 → 追従
+到達 → XY停止確認 → 指定量だけZ上昇・停止確認
+ → EE直動を伸ばす → フックを閉じる
+ → XYをホーム関節角へ戻す・停止確認
+ → EE直動を戻す → フックを開く
+ → Z原点復帰・離脱・整定 → CYCLE_READY（c待ち）
+c → 新しい対象の追従・収穫を開始
+```
+
+到達後は画像目標を受け付けず、EEによる遮蔽でも画像に追従しません。Z動作中はXYを保持し、EE動作中はZ・XYを保持します。収穫動作は直動→フックだけで、ピッチ操作は追加しません。XY復帰は関節空間の経路で、手先の直線後退ではありません。復帰中は直動を伸ばした状態とフック閉鎖を維持し、復帰完了後に直動収納→フック開放を順番に行います。
+
+統合YAMLの調整箇所:
+
+| 設定 | 意味 |
+|---|---|
+| `launch.auto_harvest_enabled: true` | 既存EEノードを起動して自動収穫を行う。Z・到達判定も有効にする |
+| `harvest_cycle.automatic_sequence: true` | 上昇・EE収穫・収納・Z原点復帰を含む状態遷移を使う |
+| `harvest_cycle.post_arrival_lift_m: 0.010` | 到達時のZ位置から10mm上昇。単位m、Picoの1mm単位へ丸める |
+| `startup.home_joints_deg` | 収穫後のXY復帰先。初期値 `[10,110,-30]` 度 |
+| `z_tracking.speed_m_s` / `move_timeout_sec` | 上昇速度と動作時間上限 |
+| `z_tracking.home_speed_m_s: 0.010` | 起動時・収穫後のZ原点復帰速度。10mm/s。速度指定対応ファームウェアへの更新が必要 |
+| `auto_harvest.arm_lift_timeout_sec` / `z_home_timeout_sec` | EE側で上昇・Z原点復帰の完了を待つ上限。45秒／140秒 |
+| `auto_harvest.harvest_pose.enc4` / `initial_pose.enc4` | 直動の伸長／収納先。既存値−25／0（生カウント） |
+| `auto_harvest.hook_servo.closed_feedback` / `open_feedback` | GP28の閉鎖／開放目標。既存値4000／500 |
+
+上昇目標がZ可動範囲外なら異常停止し、上限へ切り詰めて続行しません。最後のZホームはリミットを使った原点復帰で、既存ファームウェアに従い原点から5mm離脱して保持します。Z位置はPicoのパルス数による推定で、独立した位置センサーの実測ではありません。EEはセンサー許容差・安定確認を用い、サービス受理や固定時間だけでは次へ進みません。
+
+EE設定は `module/set_params.yaml` の現在値を統合YAMLへ転記しています。閉1600µs／開1350µs、停止1500µsも維持します。**このlaunchのEE調整先は統合YAMLです。単独EE・旧iPad経路は従来のmodule/set_params.yamlを使用します。**
+
+```bash
+cd ~/hibikino_toms_ws
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --packages-select arm_controller_pkg end_effector_pkg vision_pkg
+source install/setup.bash
+ros2 launch vision_pkg vision_xy_tracking.launch.py \
+  backend:=can_mixed startup_mode:=configured \
+  synthetic_camera:=false show_window:=true \
+  z_tracking_enabled:=true harvest_cycle_enabled:=true auto_harvest_enabled:=true
+```
+
+このコマンドでは実機EEも初期化・動作します。EEの手動操作ノードや別の自動収穫launchは同時起動しないでください。模擬環境用は `backend:=sim synthetic_camera:=true show_window:=false` に置き換えます。`vision_auto_harvest.launch.py` も同じ統合launchを使用し、EEを重複起動しません。
+
+`WAIT_NEXT_CYCLE` / `CYCLE_READY` になったら起動端末で **c** を押します。端末入力が使えなければ別端末で送信します。
+
+```bash
+ros2 topic pub --once /end_effector/auto/key std_msgs/msg/String '{data: c}'
+```
+
+動作中の `c` は破棄し、予約しません。このモードで `n` は再開指令になりません。Space（または `{data: space}`）はEE駆動停止とアーム保持、Ctrl-Cは終了です。異常時の `c` では復帰せず、原因確認後に再起動します。停止時に自動トルクOFFを追加していません。
+
+`/arm_xy/harvest/state` の `LIFTING → HARVEST_HOLD(post_arrival_lift_complete) → RETURNING → RETURNED → Z_HOMING → CYCLE_READY` と、`/end_effector/auto/state` の工程・実測値・目標値を確認できます。果実回収の判定はありません。今回の順序変更後の実機動作・もぎ取り力・果実保持は未検証です。ファームウェアの変更・書き込みは不要です。
+
+以下の手動EE連携・旧経路の説明は従来モードのものです。追従だけ使う場合は `harvest_cycle_enabled:=false auto_harvest_enabled:=false require_ee_ready:=false` を指定します。
+
+## 設定項目一覧
+
+Z原点復帰速度は `z_tracking.home_speed_m_s`、通常のZ追従・到達後の上昇速度は `z_tracking.speed_m_s` です。前者を今回追加したためZ用Picoの更新が必要です。更新後の速度調整はYAML変更とlaunch再起動で反映します。省略時と旧サービスからの原点復帰は従来どおり5mm/sです。カメラ目標距離は `target.desired_distance_m`（現在0.15m＝150mm）です。
 
 | 調整内容 | YAML内の場所 |
 |---|---|
@@ -18,7 +79,7 @@
 | 手先yaw・カメラ基準yaw | `target.goal_yaw_deg` / `target.camera_reference_yaw_deg` |
 | 目標距離・画像接近速度 | `target.desired_distance_m` / `target.image_approach` |
 
-起動引数は `launch` の設定を上書きします。既定の `launch.backend: sim` と `launch.z_tracking_enabled: false` は従来どおりです。実機にはこれまでのコマンドを使えます:
+起動引数は `launch` の設定を上書きします。既定の `launch.backend: sim` は維持し、自動収穫用に `launch.z_tracking_enabled` と `launch.auto_harvest_enabled` はtrueにしています。実機にはこれまでのコマンドを使えます:
 
 **`startup_mode:=configured` と `z_tracking_enabled:=true` の組合せでは、起動ごとにZを自動原点復帰します。** Picoが原点確定済みでも再実行します。通信確認・XYの実測停止確認 → Z原点復帰・離脱・整定 → XYのhome/demo姿勢 → 追従開始、の順です。原点復帰に失敗するとXYへ進まず異常保持し、自動再試行しません。Zを無効にした場合はZを操作しません。
 
@@ -34,9 +95,9 @@ ros2 launch vision_pkg vision_xy_tracking.launch.py \
 
 `z_tracking:` など同じ階層のキーを複数回書かず、既存ブロック内の値を編集してください。後半ブロックで前半が上書きされる事故を防ぐため、launchは重複キーを行番号付きで検出し、ノード起動前に停止します。
 
-初期姿勢を変更した場合は、初期角度を追従中も保持するため `target.goal_yaw_deg` を `startup.demo_joints_deg` の3角度の合計に合わせてください。現在は `[10,110,-20]` なので100°です。`camera_reference_yaw_deg` は取付け校正の基準で、別の設定です。
+初期姿勢を変更した場合は、初期角度を追従中も保持するため `target.goal_yaw_deg` を `startup.demo_joints_deg` の3角度の合計に合わせてください。例えば `[10,110,-30]` なら90°です。`camera_reference_yaw_deg` は取付け校正の基準で、別の設定です。
 
-`target_lost_or_ambiguous` は検出自体があっても同じ対象への対応付けができない場合に出ます。画像接近モードでは最初の対象IDをXY・Z共通で固定し、長い消失後に別IDを再取得しても `approach_target_changed` で保持します。再取得IDのZ観測を先に送ることはありません。Z補正中の対象消失は従来どおり停止・異常保持し、再開には原因を確認してlaunchを再起動します。
+`target_lost_or_ambiguous` は検出自体があっても同じ対象への対応付けができない場合に出ます。画像接近モードでは最初の対象IDをXY・Z共通で固定し、長い消失後に別IDを再取得しても `approach_target_changed` で保持します。再取得IDのZ観測を先に送ることはありません。短い未検出では全軸を一時保持し、同じ対象の有効画像を確認して再開します。対象IDが変わった場合は原因を確認してlaunchを再起動してください。
 
 **旧 `xy_robot_config.yaml`・`xy_tracking_params.yaml`・`realtime_detector.yaml` は、他のlaunchや単独ノード用として残しています。このlaunchからは参照せず、自動同期もしません。** 以下の旧ファイル名に関する説明は、統合ファイル内の同名キーへ読み替えてください。互換用の `vision_config:=...` を明示した場合だけ、vision部分を指定ファイルから読みます。
 
@@ -70,6 +131,19 @@ ros2 launch vision_pkg vision_xy_tracking.launch.py \
 以前の「深度換算10mm」の方式は、現在の追従経路では使いません。以前の数値検証は [履歴](../arm_controller_pkg/validation/z_tracking_20261117/summary.json) として残してあり、画素方式の実測結果ではありません。
 
 自動EE収穫サイクルは[end_effector_pkgの手順書](../end_effector_pkg/README_auto_harvest_ja.md)を参照してください。新しいlaunchは `vision_auto_harvest.launch.py` です。既存の手動連携 `arm_ee_keycontrol.launch.py` とは別にEEシリアルを開くので、同時には起動しないでください。
+
+## 追従中の一時的な検出欠損（2026-11-17修正）
+
+Z補正中の未検出を即座に再起動必須の異常へ変換せず、Z・XYを停止保持する `OBSERVATION_HOLD` にしました。Z停止後の新しい有効画像3回で復帰を確認します。対象ID変更・モーター通信異常・明示停止は異常停止のままです。設定と状態の詳細は [Z画素追従の手順書](README_z_pixel_tracking_ja.md#深度が取れない場合と異常時) を参照してください。
+
+CAN混成構成のq3起動チェックも、完全一致を要求していた箇所を修正し、設定済み1カウントの差を許容します。確認時間は `dxl_params.startup_readback_timeout_ms: 250` です。[起動時保持確認](../arm_controller_pkg/README_can_joint_migration_ja.md#q3の起動時保持確認2026-11-17修正) に条件を記載しています。両修正の反映には次を実行し、以前のlaunchを終了して再起動してください。実機移動による再検証は未実施です。
+
+```bash
+cd ~/hibikino_toms_ws
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --packages-select arm_controller_pkg vision_pkg
+source install/setup.bash
+```
 
 ## EE操作で繰り返す収穫サイクル（2026-10-13追加）
 
@@ -143,7 +217,7 @@ arm側YAMLの `harvest_cycle` で調整します。現在は以下が0.6秒続�
 - `/arm_xy/harvest/ee_alive`: EEノードが0.2秒ごとに送る`std_msgs/Bool`。引き戻しの継続監視に使用。
 - 画像診断の `harvest_state` と画面の保持理由でも現在の区間を確認できます。
 
-`/arm_xy/hold` は画像観測用の一時保持です。収穫中の操作には上記のキー／サービスを使用してください。
+`/arm_xy/vision_hold` は画像観測不良による一時保持です。`/arm_xy/hold` は明示保持で、Z補正中は異常をラッチします。収穫中の操作には上記のキー／サービスを使用してください。
 
 従来の連続追従は端末1で `harvest_cycle_enabled:=false`。EEだけを単独操作する場合は端末2で `harvest_link_enabled:=false`。連携を無効にすると、EE操作からアームへの保持・復帰要求は出しません。
 
@@ -343,7 +417,7 @@ ros2 topic pub --once /arm_xy/hold std_msgs/msg/Empty '{}'
 - 深度は中心付近の有効なマスク内値の中央値。無効時に背景の値を代用しません。急な深度ジャンプは以前の有効深度を保持し、元へ戻るまで指令を停止します。長い消失後の再取得／ノード再起動でも再初期化できます。
 - 撮影はRealSense global/system時刻。ハードウェア時刻だけのフレームは指令に使わず同期待ち。ROS時刻への変換、推論後年齢判定、姿勢履歴との対応を行います。実D405で `use_sim_time` は使用しないでください。
 - ROS姿勢受信は専用executorスレッド、カメラ・推論・OpenCV生成／表示／終了はmainスレッド。カメラ取得はpollで最新フレームを取得。二重imshowによる点滅を防ぎます。
-- 対象消失・異常観測は `/arm_xy/hold` で保持要求。プロセス停止はtrackerの0.5sタイムアウトで保持。Goalのstampは受信時刻に書き換えず撮影時刻を保持します。
+- 対象消失・異常観測は `/arm_xy/vision_hold` で一時保持要求。対象ID変更は `/arm_xy/hold` で停止します。プロセス停止はtrackerの目標タイムアウトでXYを保持し、Z補正中の画素観測タイムアウトではZ・XYを一時保持します。Goalのstampは受信時刻に書き換えず撮影時刻を保持します。
 - IK失敗は実測位置で保持。通信異常は一度だけ可能な範囲で実測保持を試みて故障をラッチし、動作の自動再試行はしません。競合する収穫サービスが見えた場合は指令を抑止します。
 
 ## 記録・診断
@@ -351,7 +425,7 @@ ros2 topic pub --once /arm_xy/hold std_msgs/msg/Empty '{}'
 ```bash
 ros2 bag record /vision/servo_diagnostics /arm_xy/diagnostics \
  /arm_xy/actual /arm_xy/goal /arm_xy/joints /arm_xy/command_joints \
- /arm_xy/error /arm_xy/hold /arm_xy/ready
+ /arm_xy/error /arm_xy/hold /arm_xy/vision_hold /arm_xy/z/state /arm_xy/ready
 ```
 
 - `/vision/servo_diagnostics` (`std_msgs/String`、JSON): `track_id`, `center_source`, `center`, `target_pixel`, `pixel_error`, `depth_m`, `desired_distance_m`, `distance_error_m`, `capture_stamp`, `observation_age_sec`, `pose_gap_sec`, `actual_pose`, `goal_pose`, `reason`, `processing_sec`。無効／未観測の値は省略またはnullで、古い値を新しい観測として流しません。

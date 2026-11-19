@@ -7,6 +7,12 @@ from .joint_startup import JointStartup
 class HarvestCycle:
     def __init__(self, settings, return_joints, limits, velocity, acceleration):
         self.settings = dict(settings)
+        automatic = self.settings.setdefault('automatic_sequence', False)
+        if not isinstance(automatic, bool):
+            raise ValueError('harvest_cycle.automatic_sequence must be boolean')
+        lift = self.settings.setdefault('post_arrival_lift_m', .010)
+        if not math.isfinite(float(lift)) or not 0 <= float(lift) <= .450:
+            raise ValueError('harvest_cycle.post_arrival_lift_m must be within 0..0.450 m')
         defaults = dict(arrival_pixel_tolerance_px=20., arrival_distance_tolerance_m=.006,
                         arrival_joint_speed_rad_s=.03, arrival_yaw_tolerance_rad=.03,
                         arrival_goal_pose_tolerance_m=.005,
@@ -61,12 +67,26 @@ class HarvestCycle:
         elif self.pending is not None:
             return False, 'another command is pending'
         elif action == 'pull' and self.state == 'HARVEST_HOLD':
+            if self.settings['automatic_sequence'] and self.reason != 'post_arrival_lift_complete':
+                return False, 'automatic cycle requires completed Z lift before EE closure/return'
             if self.hold_settled < 3:
                 return False, 'arm hold is still settling'
             if not self.ee_alive(now):
                 return False, 'EE heartbeat missing/stale'
             self.pending = action
-        elif action == 'resume' and self.state in ('HARVEST_HOLD', 'RETURNED'):
+        elif (action == 'lift' and self.settings['automatic_sequence'] and
+              self.state == 'HARVEST_HOLD' and self.reason == 'approach_complete'):
+            if self.hold_settled < 3 or not self.ee_alive(now):
+                return False, 'settled arm hold and fresh EE heartbeat required'
+            self.pending = action
+        elif action == 'home_z' and self.settings['automatic_sequence'] and self.state == 'RETURNED':
+            if self.hold_settled < 3 or not self.ee_alive(now):
+                return False, 'settled home pose and fresh EE heartbeat required'
+            self.pending = action
+        elif action == 'resume' and self.state in (
+                ('CYCLE_READY',) if self.settings['automatic_sequence'] else ('HARVEST_HOLD', 'RETURNED')):
+            if self.settings['automatic_sequence'] and (self.hold_settled < 3 or not self.ee_alive(now)):
+                return False, 'settled cycle-ready pose and fresh EE heartbeat required'
             self.pending = action
         else:
             return False, f'{action} rejected in {self.state}'
@@ -108,6 +128,12 @@ class HarvestCycle:
         elif action == 'resume':
             self.hold_joints = None
             self.transition('APPROACH', 'operator_resume', now)
+        elif action in ('lift', 'home_z'):
+            if self.ee_alive(now):
+                self.transition('LIFTING' if action == 'lift' else 'Z_HOMING',
+                                'post_arrival_lift_requested' if action == 'lift' else 'ee_stowed_z_home_requested', now)
+            else:
+                self.freeze(q, 'ee_heartbeat_lost', now)
         if self.state == 'RETURNING':
             if not self.ee_alive(now):
                 self.freeze(q, 'ee_heartbeat_lost', now)
@@ -115,9 +141,11 @@ class HarvestCycle:
                 command, done = self.motion.step(q, now)
                 if done:
                     self.hold_joints = list(self.return_joints)
-                    self.transition('RETURNED', 'return_complete_wait_for_n', now)
+                    self.hold_settled = 0
+                    self.transition('RETURNED', 'return_complete_wait_for_ee_reset' if self.settings['automatic_sequence']
+                                    else 'return_complete_wait_for_n', now)
                 return command
-        if self.state in ('HARVEST_HOLD', 'RETURNED'):
+        if self.state in ('HARVEST_HOLD', 'RETURNED', 'CYCLE_READY', 'LIFTING', 'Z_HOMING'):
             settled = (speed <= self.settings['arrival_joint_speed_rad_s'] and
                        max(abs(q-self.hold_joints)) <= self.settings['return_tolerance_rad'])
             self.hold_settled = self.hold_settled+1 if settled else 0

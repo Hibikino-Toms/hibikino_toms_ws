@@ -12,9 +12,10 @@ launch:
   startup_mode: configured
   synthetic_camera: false
   show_window: true
-  z_tracking_enabled: false
+  z_tracking_enabled: true
   harvest_cycle_enabled: true
-  require_ee_ready: false
+  require_ee_ready: false  # 自動収穫有効時はlaunchがtrueを強制する。
+  auto_harvest_enabled: true  # EE初期化を確認後にアーム始動。cで次サイクル。
 
 # ---- ROS制御パラメーター：10Hz、速度・加速度、IK補正分解能 ----
 tracking:
@@ -45,7 +46,7 @@ initial_joints_deg: [9.38866738, 93.87929147, -38.57742594]
 startup:
   # Configured joint-space startup targets, not calibration references.
   home_joints_deg: [10.0, 110.0, -30.0]
-  # Configured demo yaw=100 deg; camera angular reference is a separate calibration.
+  # Configured demo yaw=90 deg; camera angular reference is a separate calibration.
   demo_joints_deg: [10.0, 110.0, -30.0]
   minimum_segment_duration_sec: 3.0
   segment_timeout_sec: 60.0
@@ -61,10 +62,12 @@ z_tracking:
   stop_ratio: 0.05     # Continue until <= 1/20; no depth conversion.
   step_m: 0.005        # Bounded move, reobserve before the next one.
   max_cycle_travel_m: 0.100
-  speed_m_s: 0.010
+  speed_m_s: 0.020
+  home_speed_m_s: 0.010  # 原点復帰速度10mm/s。速度指定対応版Z Picoの書き込みが必要。
   min_position_m: 0.005          # 動作下限：原点から5mm
   max_position_m: 0.450          # 動作上限：原点から450mm
   observation_timeout_sec: 0.30
+  observation_recovery_samples: 3  # Fresh frames after Z stops, same tracked target.
   communication_timeout_sec: 0.60
   xy_stop_speed_rad_s: 0.02
   # q3 is ~0.088 deg/count. Use a bounded post-hold position window,
@@ -158,12 +161,15 @@ dxl_params:
   DXL_5_MAX_DEG: 315.0
   communication_timeout_ms: 40
   # Startup-only Goal Position readback polling (not an arrival wait).
-  startup_readback_timeout_ms: 100
-  # Only 0 (strict) or 1 encoder count. See README for current-position checks.
+  startup_readback_timeout_ms: 250
+  # Two paired readings; allow <=1 count in goal error AND initial-position drift.
+  # Only 0 (strict) or 1 encoder count; never follows a moving startup position.
   startup_hold_tolerance_ticks: 1
 
 # The vision launch enables this cycle; circle/legacy tracker defaults stay disabled.
 harvest_cycle:
+  automatic_sequence: true
+  post_arrival_lift_m: 0.15  # 到達後に上昇する量[m]。初期値10mm。
   # Keep the measured visual/distance/yaw checks, but allow typical target
   # motion and tracker lag between the latest goal and measured FK.
   arrival_pixel_tolerance_px: 50.0
@@ -174,7 +180,7 @@ harvest_cycle:
   settle_sec: 0.6
   observation_timeout_sec: 0.25
   ee_timeout_sec: 1.0
-  # Return directly to startup.demo_joints_deg; no automatic Z/EE movement.
+  # 自動サイクルでは startup.home_joints_deg へ関節空間で復帰。
   return_min_duration_sec: 3.0
   return_timeout_sec: 60.0
   return_tolerance_rad: 0.017453292519943295
@@ -228,11 +234,11 @@ target:
     - [0.0, -1.0, 0.0,  0.000] #0.110
     - [0.0, 0.0,  0.0,  1.000]
   # Tool target yaw is independent of camera angular calibration.
-  goal_yaw_deg: 90.0  # Fixed to sum(startup.demo_joints_deg): 10+110-20.
+  goal_yaw_deg: 90.0  # Fixed to sum(startup.demo_joints_deg): 10+110-30.
   # null = geometric image center ((width-1)/2, (height-1)/2), NOT principal point.
   target_pixel: null
   # Horizontal shift from target_pixel (or image center when null). + moves right, - moves left.
-  target_pixel_offset_x_px: 50.0
+  target_pixel_offset_x_px: 0.0
   # Vertical offset: + moves the target down, - moves it up. 0 = image center.
   target_pixel_offset_y_px: 0.0
   # 0 = lock median of first stable depth samples after arm ready.
@@ -282,3 +288,95 @@ target:
 simulation:
   # Fixed 3D point initialized once in the camera at startup; then WORLD-fixed.
   initial_target_camera_m: [0.025, 0.015, 0.25]
+
+# ---- 自動EE：このlaunchではmodule/set_params.yamlではなく下記を使用 ----
+# 既存の実機設定を転記。独立起動・旧iPad経路はmodule/set_params.yamlを使用。
+EE_params:
+  EE_PICO_SERIAL_NUMBER: A437E4B324D4447A
+  BAUDRATE: 115200
+  FOTO_VAL: 950
+  EDF_VAL: 2500
+auto_harvest:
+  hardware_profile: roll_rail_servo
+  sensor_timeout_sec: 0.8
+  sensor_stable_samples: 4
+  home_stability_tolerance:
+    pot1: 35
+    servo_fb: 30
+    enc4: 1
+  target_stable_samples: 3
+  target_tolerance:
+    pot1: 70
+    servo_fb: 70
+    enc4: 4
+  sensor_limits:
+    pot1:
+    - 360
+    - 3200
+    servo_fb:
+    - 0
+    - 4095
+    enc4:
+    - -50
+    - 0
+  initial_pose:
+    pot1: 1900
+    servo_fb: null
+    enc4: 0
+  harvest_pose:
+    enc4: -40  # 伸長目標（生カウント）。距離へ推測換算しない。
+    servo_fb: null  # hook_servo.closed_feedbackを使用。
+  increase_pwm_sign:
+    pot1: -1
+    servo_fb: 1
+    enc4: 1
+  pwm:
+    min:
+      pot1: 180
+      servo_fb: 180
+      enc4: 200
+    max:
+      pot1: 180
+      servo_fb: 220
+      enc4: 240
+    max_total_abs_pwm: 540
+    slow_band:
+      pot1: 180
+      servo_fb: 180
+      enc4: 8
+  stage_timeout_sec: 20.0
+  progress_timeout_sec: 20.0
+  arm_return_timeout_sec: 70.0
+  arm_startup_timeout_sec: 120.0
+  progress_min_delta:
+    pot1: 3
+    servo_fb: 3
+    enc4: 1
+  progress_wrong_direction_tolerance: 2
+  heartbeat_period_sec: 0.1
+  serial_watchdog_sec: 0.6
+  control_rate_hz: 25.0
+  roll_motor:
+    feedback_median_samples: 3
+    direction_window_sec: 0.4
+  encoder_homing:
+    retract_pwm: 220
+    timeout_sec: 20.0
+    progress_timeout_sec: 3.0
+    debounce_ms: 40
+    release_max_counts: 4
+    max_travel_counts: 70
+    initial_telemetry_timeout_sec: 5.0
+  hook_servo:
+    neutral_us: 1500
+    close_us: 1600
+    open_us: 1350
+    calibration_valid: true
+    open_feedback: 500  # 収納時のフック開放目標（GP28の生値）。
+    closed_feedback: 4000  # 収穫時のフック閉鎖目標。
+    feedback_median_samples: 3
+    direction_window_sec: 0.6
+  simulated_counts_per_sec: 900.0
+  simulated_encoder_counts_per_sec: 30.0
+  arm_lift_timeout_sec: 45.0
+  z_home_timeout_sec: 140.0

@@ -254,30 +254,40 @@ class _DynamixelQ3:
                     raise ValueError(f"{key} must contain the legacy five motor entries")
                 self._write(int(p[address_key]), int(values[4]), 4)
         goal_address = int(p["ADDR_GOAL_POSITION"])
-        self._write(goal_address, present, 4)
         tolerance = int(p.get("startup_hold_tolerance_ticks", 1))
-        timeout = float(p.get("startup_readback_timeout_ms", 100)) / 1000.0
+        timeout = float(p.get("startup_readback_timeout_ms", 250)) / 1000.0
         if not math.isfinite(timeout) or not 0 < timeout <= 1.0 or tolerance not in (0, 1):
             raise ValueError("invalid q3 startup hold readback settings")
+        self._write(goal_address, present, 4)
         deadline = time.monotonic() + timeout
         readbacks = []
         confirmed = False
+        stable_samples = 0
         while True:
             goal = self._read(goal_address, 4)
             readbacks.append(goal)
-            if goal == present:
-                confirmed = True
-                break
             if abs(goal-present) <= tolerance:
                 live_position = self._read(int(p["ADDR_PRESENT_POSITION"]), 4)
                 live_torque = self._read(int(p["ADDR_TORQUE_ENABLE"]), 1)
                 confirmed_goal = self._read(goal_address, 4)
                 readbacks.append(confirmed_goal)
-                if live_torque == 0 and live_position == confirmed_goal:
-                    if not self.min_tick <= live_position <= self.max_tick:
-                        raise RuntimeError(f"DXL q3 current hold position {live_position} outside encoder range")
+                angle = (live_position-self.min_tick)/(self.max_tick-self.min_tick)*self.max_angle
+                # Bound the readback, live hold error AND drift from the initial
+                # sample. Do not chase a hand-moved arm or require tick equality
+                # inside a configured +/-1-count tolerance.
+                valid = (live_torque == torque and
+                         self.min_tick <= live_position <= self.max_tick and
+                         self.min_tick <= confirmed_goal <= self.max_tick and
+                         self.min_deg <= angle <= self.max_deg and
+                         abs(live_position-present) <= tolerance and
+                         abs(confirmed_goal-present) <= tolerance and
+                         abs(confirmed_goal-live_position) <= tolerance)
+                stable_samples = stable_samples+1 if valid else 0
+                if stable_samples >= 2:
                     confirmed = True
                     break
+            else:
+                stable_samples = 0
             remaining = deadline-time.monotonic()
             if remaining <= 0:
                 break

@@ -368,6 +368,10 @@ class AutoHarvestNode(Node):
         HARVEST_EXTEND: 'enc4',  # Logical slot 4, physical M2 for roll_rail_servo.
     }
     WAIT_RETURN = 'WAIT_ARM_RETURN'
+    WAIT_LIFT = 'WAIT_POST_ARRIVAL_LIFT'
+    RESET_RETRACT = 'EE_STOW_RETRACT'
+    RESET_OPEN = 'EE_STOW_OPEN'
+    WAIT_Z_HOME = 'WAIT_Z_HOME'
     RESET_EE = 'EE_RESET'
     WAIT_NEXT = 'WAIT_NEXT_CYCLE'
     WAIT_RESUME = 'WAIT_ARM_RESUME'
@@ -381,11 +385,17 @@ class AutoHarvestNode(Node):
         self.declare_parameter('keyboard_enabled', True)
         self.declare_parameter('auto_confirm_sim_home', True)
         self.declare_parameter('homing_only', False)
+        self.declare_parameter('sequenced_z_cycle', False)
+        self.sequenced_z_cycle = bool(self.get_parameter('sequenced_z_cycle').value)
         self.homing_only = bool(self.get_parameter('homing_only').value)
         config_path = self.get_parameter('config_file').value or PARAMS_PATH
         if not config_path:
             raise RuntimeError('Set config_file (default: module/set_params.yaml)')
         self.settings = load_settings(config_path, homing_only=self.homing_only)
+        for key, default in (('arm_lift_timeout_sec', 45.), ('z_home_timeout_sec', 140.)):
+            self.settings.setdefault(key, default)
+            if not math.isfinite(float(self.settings[key])) or float(self.settings[key]) <= 0:
+                raise ValueError(f'auto_harvest.{key} must be positive and finite')
         self.active_axes = self.settings['active_axes']
         self.servo_direction = ServoDirectionMonitor(float(
             self.settings.get('hook_servo', {}).get('direction_window_sec', .6)))
@@ -440,7 +450,7 @@ class AutoHarvestNode(Node):
                 self.keyboard_enabled = False
                 self.get_logger().warning(
                     'No controlling terminal; keyboard input is disabled. Use '
-                    '/end_effector/auto/key for n or space commands.')
+                    '/end_effector/auto/key for c (sequenced cycle), n (legacy) or space.')
         if self.keyboard_enabled:
             self.terminal_settings = termios.tcgetattr(self.terminal.fileno())
             tty.setcbreak(self.terminal.fileno())
@@ -457,14 +467,32 @@ class AutoHarvestNode(Node):
                 durability=DurabilityPolicy.TRANSIENT_LOCAL,
                 reliability=ReliabilityPolicy.RELIABLE))
         self.arm_clients = {action: self.create_client(Trigger, f'/arm_xy/harvest/{action}')
-                            for action in ('hold', 'pull', 'resume')}
+                            for action in ('hold', 'pull', 'resume', 'lift', 'home_z')}
         self.ready_pub.publish(Bool(data=False))
         self.io.stop()
         self.timer = self.create_timer(1./float(self.settings['control_rate_hz']), self._tick)
         self.get_logger().info(
             f'Automatic EE harvest started: backend={backend}, state={self.state}. '
             'Rail homes automatically using the NC switch. '
-            'Space=abort and hold, n=resume only after cycle reset; c no longer zeros ENC4.')
+            + ('Space=abort and hold, c=next cycle only after EE stow and Z homing.'
+               if self.sequenced_z_cycle else
+               'Space=abort and hold, n=resume only after cycle reset; c does not zero ENC4.'))
+
+    def _allowed_arm_states(self):
+        return {
+            self.APPROACH: ('APPROACH', 'HARVEST_HOLD'),
+            self.WAIT_LIFT: ('HARVEST_HOLD', 'LIFTING'),
+            self.HARVEST_PITCH: ('HARVEST_HOLD',),
+            self.HARVEST_EXTEND: ('HARVEST_HOLD',),
+            self.HARVEST_CLOSE: ('HARVEST_HOLD',),
+            self.WAIT_RETURN: ('HARVEST_HOLD', 'RETURNING', 'RETURNED'),
+            self.RESET_EE: ('RETURNED',),
+            self.RESET_RETRACT: ('RETURNED',),
+            self.RESET_OPEN: ('RETURNED',),
+            self.WAIT_Z_HOME: ('RETURNED', 'Z_HOMING', 'CYCLE_READY'),
+            self.WAIT_NEXT: ('CYCLE_READY',) if self.sequenced_z_cycle else ('RETURNED',),
+            self.WAIT_RESUME: ('CYCLE_READY', 'APPROACH') if self.sequenced_z_cycle else ('RETURNED', 'APPROACH'),
+        }.get(self.state)
 
     def _arm_state_callback(self, msg):
         try:
@@ -472,8 +500,8 @@ class AutoHarvestNode(Node):
             state = str(data['state'])
             seq = int(data['sequence'])
             stamp = float(data['stamp'])
-            if state not in ('STARTUP', 'APPROACH', 'HARVEST_HOLD', 'RETURNING',
-                             'RETURNED', 'FAULT', 'DISABLED') or not math.isfinite(stamp):
+            if state not in ('STARTUP', 'APPROACH', 'HARVEST_HOLD', 'LIFTING', 'Z_HOMING',
+                             'CYCLE_READY', 'RETURNING', 'RETURNED', 'FAULT', 'DISABLED') or not math.isfinite(stamp):
                 return
             ros_now = self.get_clock().now().nanoseconds/1e9
             if abs(ros_now-stamp) > .7:
@@ -485,18 +513,15 @@ class AutoHarvestNode(Node):
                                    hold_ready=bool(data.get('hold_ready', False)),
                                    stamp=stamp, received=time.monotonic())
             self.last_arm_sequence = seq
+            if self.sequenced_z_cycle and data.get('automatic_sequence') is not True:
+                self._fault('sequenced EE cycle requires harvest_cycle.automatic_sequence=true in tracker config')
+                return
             if state == 'FAULT' and self.state not in (self.FAULT, self.ABORTED):
                 self._fault(f'arm entered FAULT: {self.arm_status["reason"]}')
                 return
-            moving_ee = (self.HARVEST_PITCH, self.HARVEST_EXTEND, self.HARVEST_CLOSE)
-            if self.state in moving_ee and state != 'HARVEST_HOLD':
-                self._fault(f'arm left harvest hold during EE action: {state}')
-                return
-            if self.state == self.WAIT_RETURN and state not in ('HARVEST_HOLD', 'RETURNING', 'RETURNED'):
-                self._fault(f'unexpected arm state while waiting for return: {state}')
-                return
-            if self.state in (self.RESET_EE, self.WAIT_NEXT) and state != 'RETURNED':
-                self._fault(f'arm left returned pose before EE reset/resume: {state}')
+            allowed = self._allowed_arm_states()
+            if allowed is not None and state not in allowed:
+                self._fault(f'unexpected arm state during {self.state}: {state}')
                 return
             if self.state == self.APPROACH and state == 'HARVEST_HOLD' and self.arm_status['reason'] != 'approach_complete':
                 self._transition(self.ABORTED, 'arm was manually held; no automatic harvest started')
@@ -512,11 +537,28 @@ class AutoHarvestNode(Node):
                              self.arm_status['hold_ready'])
                 if new_cycle and self.cycle_sequence != seq:
                     self.cycle_sequence = seq
-                    self._begin_motion(self.HARVEST_PITCH,
-                                       {'pot2': self.settings['harvest_pose'].get('pot2')})
-            if self.state == self.WAIT_RETURN and state == 'RETURNED' and self.arm_status['reason'] == 'return_complete_wait_for_n':
-                self._begin_motion(self.RESET_EE, self.settings['initial_pose'])
-            if self.state == self.WAIT_NEXT and state == 'RETURNED' and self.arm_status['reason'] == 'return_complete_wait_for_n':
+                    if self.sequenced_z_cycle:
+                        self._transition(self.WAIT_LIFT, 'approach complete; requesting bounded Z lift')
+                        self._request_arm('lift')
+                    else:
+                        self._begin_motion(self.HARVEST_PITCH,
+                                           {'pot2': self.settings['harvest_pose'].get('pot2')})
+            if (self.state == self.WAIT_LIFT and state == 'HARVEST_HOLD' and
+                    self.arm_status['reason'] == 'post_arrival_lift_complete' and
+                    seq > self.cycle_sequence and self.arm_status['hold_ready']):
+                self._begin_motion(self.HARVEST_EXTEND, {'enc4': self.settings['harvest_pose']['enc4']})
+            return_reason = 'return_complete_wait_for_ee_reset' if self.sequenced_z_cycle else 'return_complete_wait_for_n'
+            if (self.state == self.WAIT_RETURN and state == 'RETURNED' and self.arm_status['reason'] == return_reason
+                    and (not self.sequenced_z_cycle or self.arm_status['hold_ready'])):
+                if self.sequenced_z_cycle:
+                    self._begin_motion(self.RESET_RETRACT, {'enc4': self.settings['initial_pose']['enc4']})
+                else:
+                    self._begin_motion(self.RESET_EE, self.settings['initial_pose'])
+            if (self.state == self.WAIT_Z_HOME and state == 'CYCLE_READY' and
+                    self.arm_status['reason'] == 'cycle_complete_wait_for_c' and self.arm_status['hold_ready']):
+                self._transition(self.WAIT_NEXT, 'EE stowed and Z homed; waiting for c')
+                self.arm_ready = True
+            if self.state == self.WAIT_NEXT and not self.sequenced_z_cycle and state == 'RETURNED' and self.arm_status['reason'] == return_reason:
                 self.arm_ready = True
             if self.state == self.WAIT_ARM and state == 'FAULT':
                 self._fault('arm entered FAULT during startup')
@@ -550,7 +592,8 @@ class AutoHarvestNode(Node):
         # Harvest stages must remain strictly sequential. The Pico stops other
         # axes when it receives a drive command, so each stage owns one motor.
         expected_axis = self.HARVEST_AXIS_BY_STATE.get(
-            state, self.settings['hook_feedback_axis'] if state == self.HARVEST_CLOSE else None)
+            state, 'enc4' if state == self.RESET_RETRACT else
+            self.settings['hook_feedback_axis'] if state in (self.HARVEST_CLOSE, self.RESET_OPEN) else None)
         if expected_axis is not None and (len(targets) != 1 or expected_axis not in targets):
             self._fault(
                 f'{state} must move only {expected_axis} '
@@ -590,27 +633,22 @@ class AutoHarvestNode(Node):
             self._fault(f'arm service failed: {exc}')
 
     def _arm_wait_check(self, now):
+        if self.state == self.WAIT_ARM and now-self.arm_start_wait > float(self.settings['arm_startup_timeout_sec']):
+            self._fault('arm startup completion timeout')
+            return False
         if self.state == self.WAIT_ARM and self._fresh_arm_state() is None:
             if now-self.arm_start_wait > float(self.settings['arm_startup_timeout_sec']):
                 self._fault('arm startup-state heartbeat timeout')
                 return False
             return True
-        if self.state in (self.WAIT_ARM, self.WAIT_RESUME, self.APPROACH, self.HARVEST_PITCH,
-                          self.HARVEST_EXTEND, self.HARVEST_CLOSE, self.WAIT_RETURN,
-                          self.RESET_EE, self.WAIT_NEXT):
+        allowed = self._allowed_arm_states()
+        if self.state == self.WAIT_ARM or allowed is not None:
             if self._fresh_arm_state() is None:
                 self._fault('arm harvest-state heartbeat lost')
                 return False
             status = self._fresh_arm_state()
-            if self.state == self.WAIT_RESUME and status['state'] not in ('RETURNED', 'APPROACH'):
-                self._fault(f'unexpected arm state while waiting to resume: {status["state"]}')
-                return False
-            if self.state == self.APPROACH and status['state'] not in ('APPROACH', 'HARVEST_HOLD'):
-                self._fault(f'unexpected arm state while approaching: {status["state"]}')
-                return False
-            if self.state in (self.HARVEST_PITCH, self.HARVEST_EXTEND,
-                              self.HARVEST_CLOSE) and status['state'] != 'HARVEST_HOLD':
-                self._fault(f'arm is not holding during EE action: {status["state"]}')
+            if allowed is not None and status['state'] not in allowed:
+                self._fault(f'unexpected arm state during {self.state}: {status["state"]}')
                 return False
         return True
 
@@ -673,7 +711,8 @@ class AutoHarvestNode(Node):
 
         harvest_axis_by_state = dict(
             self.HARVEST_AXIS_BY_STATE,
-            **{self.HARVEST_CLOSE: self.settings['hook_feedback_axis']})
+            **{self.HARVEST_CLOSE: self.settings['hook_feedback_axis'],
+               self.RESET_RETRACT: 'enc4', self.RESET_OPEN: self.settings['hook_feedback_axis']})
         if self.state in harvest_axis_by_state:
             unrelated_out_of_range = next(
                 (name for name in self.active_axes
@@ -910,6 +949,12 @@ class AutoHarvestNode(Node):
         elif self.state == self.HARVEST_CLOSE:
             self._transition(self.WAIT_RETURN, 'hook closed; requesting arm return')
             self._request_arm('pull')
+        elif self.state == self.RESET_RETRACT:
+            hook_axis = self.settings['hook_feedback_axis']
+            self._begin_motion(self.RESET_OPEN, {hook_axis: self.settings['initial_pose'][hook_axis]})
+        elif self.state == self.RESET_OPEN:
+            self._transition(self.WAIT_Z_HOME, 'rail retracted and hook opened; requesting Z home')
+            self._request_arm('home_z')
         elif self.state == self.RESET_EE:
             self._transition(self.WAIT_NEXT, 'EE initial pose restored; waiting for n')
             status = self._fresh_arm_state()
@@ -945,13 +990,23 @@ class AutoHarvestNode(Node):
     def _handle_key(self, key):
         if key == ' ' and self.state not in (self.ABORTED, self.FAULT):
             self._abort()
+        elif self.sequenced_z_cycle and key.lower() == 'c':
+            status = self._fresh_arm_state()
+            if (self.state == self.WAIT_NEXT and self.arm_ready and status is not None and
+                    status['state'] == 'CYCLE_READY' and status['hold_ready']):
+                self.arm_ready = False
+                self._transition(self.WAIT_RESUME, 'c pressed; waiting for arm resume acknowledgement')
+                self._request_arm('resume')
+            else:
+                self.get_logger().warning('c is accepted only after EE stow and Z homing; input was discarded')
         elif key.lower() == 'c':
             self.get_logger().warning('cで原点を登録する機能は廃止しました。原点はリミット検出で設定します')
-        elif key.lower() == 'n' and self.state == self.WAIT_NEXT and self.arm_ready:
+        elif key.lower() == 'n' and not self.sequenced_z_cycle and self.state == self.WAIT_NEXT and self.arm_ready:
             self._request_arm('resume')
             self._transition(self.WAIT_RESUME, 'n pressed; waiting for arm resume acknowledgement')
         elif key.lower() == 'n':
-            self.get_logger().warning('n is accepted only after arm return and EE reset are complete')
+            self.get_logger().warning('use c after EE stow and Z homing' if self.sequenced_z_cycle else
+                                      'n is accepted only after arm return and EE reset are complete')
 
     def _key_callback(self, msg):
         value = msg.data.strip()
@@ -960,7 +1015,7 @@ class AutoHarvestNode(Node):
         elif len(value) == 1:
             self._handle_key(value)
         else:
-            self.get_logger().warning('key input must be n or space')
+            self.get_logger().warning('key input must be c (sequenced cycle), n (legacy) or space')
 
     def _keyboard(self):
         if not self.keyboard_enabled:
@@ -1081,7 +1136,7 @@ class AutoHarvestNode(Node):
                 self._monitor_homing(values, new_sample, now)
             elif self.state == self.WAIT_CALIBRATION:
                 pass  # Restart after real hook feedback endpoints are configured.
-            elif self.state in (self.INITIALIZING, self.RESET_EE, self.HARVEST_PITCH,
+            elif self.state in (self.INITIALIZING, self.RESET_EE, self.RESET_RETRACT, self.RESET_OPEN, self.HARVEST_PITCH,
                                 self.HARVEST_EXTEND, self.HARVEST_CLOSE):
                 # Each harvest axis is commanded to its target in its own
                 # stage. Once that stage completes, later load-induced
@@ -1098,16 +1153,22 @@ class AutoHarvestNode(Node):
                     raise TimeoutError('arm did not finish its return in time')
                 if self.request_future is not None and not self.request_future.done() and now-self.request_started > 2.:
                     raise TimeoutError('arm return request timed out')
+            elif self.state in (self.WAIT_LIFT, self.WAIT_Z_HOME):
+                key = 'arm_lift_timeout_sec' if self.state == self.WAIT_LIFT else 'z_home_timeout_sec'
+                if now-self.stage_started > float(self.settings[key]):
+                    raise TimeoutError(f'{self.state} completion timeout')
+                if self.request_future is not None and not self.request_future.done() and now-self.request_started > 2.:
+                    raise TimeoutError(f'{self.state} service acknowledgement timeout')
             elif self.state == self.WAIT_NEXT:
-                if self.arm_status and self.arm_status['state'] != 'RETURNED':
-                    self.arm_ready = False
-                elif self.arm_status and self.arm_status['state'] == 'RETURNED':
-                    self.arm_ready = True
+                ready_state = 'CYCLE_READY' if self.sequenced_z_cycle else 'RETURNED'
+                self.arm_ready = bool(self.arm_status and self.arm_status['state'] == ready_state
+                                      and (not self.sequenced_z_cycle or self.arm_status['hold_ready']))
             elif self.state == self.WAIT_RESUME:
                 if now-self.stage_started > 2.:
-                    raise TimeoutError('arm did not acknowledge n/resume')
+                    raise TimeoutError('arm did not acknowledge cycle resume')
             if self.state in (self.HOMING, self.HARVEST_PITCH, self.HARVEST_EXTEND, self.HARVEST_CLOSE,
-                              self.WAIT_RETURN, self.RESET_EE):
+                              self.WAIT_RETURN, self.RESET_EE, self.RESET_RETRACT, self.RESET_OPEN,
+                              self.WAIT_LIFT, self.WAIT_Z_HOME):
                 if now-self.last_hb >= float(self.settings['heartbeat_period_sec']):
                     self.io.heartbeat()
                     self.last_hb = now
@@ -1123,6 +1184,7 @@ class AutoHarvestNode(Node):
                     state=self.state, reason=self.reason, sensor=values,
                     sensor_out_of_range=self._sensor_range_status(values),
                     hardware_profile=self.settings['hardware_profile'],
+                    sequenced_z_cycle=self.sequenced_z_cycle,
                     homing_verified=self.homing_verified,
                     homing=None if values is None else values.get('homing'),
                     servo_calibrated=self.settings['servo_calibrated'],

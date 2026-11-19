@@ -1,5 +1,15 @@
 # 自動収穫EE：NCリミットによる直動原点復帰
 
+## 統合追従launchの新しい収穫サイクル（2026-11-17）
+
+`vision_xy_tracking.launch.py` / `vision_auto_harvest.launch.py` の自動収穫は、到達→Z定量上昇→直動伸長→フック閉鎖→XYホーム復帰→直動収納→フック開放→Z原点復帰→c待ち、の順です。既存のこのEEノードを `sequenced_z_cycle:=true` で使います。Picoファームウェアの変更はありません。
+
+設定は `src/vision_pkg/config/vision_xy_tracking.yaml` の `EE_params` / `auto_harvest` / `harvest_cycle` にあります。上昇量は `harvest_cycle.post_arrival_lift_m`（初期値0.010m）、EE伸長先は `auto_harvest.harvest_pose.enc4`、フック端点は `auto_harvest.hook_servo` です。直動伸長、閉鎖、収納、開放は1軸ずつ実測の許容範囲・安定確認後に進みます。起動時のEE原点復帰・初期化は従来どおりです。
+
+`/end_effector/auto/state` は `WAIT_POST_ARRIVAL_LIFT → HARVEST_EXTEND → HARVEST_CLOSE → WAIT_ARM_RETURN → EE_STOW_RETRACT → EE_STOW_OPEN → WAIT_Z_HOME → WAIT_NEXT_CYCLE` と遷移します。最後の待機状態でだけ `c` を受け付け、動作中の入力は破棄します。Spaceは中断です。完了だけで果実の収穫成功とは判定しません。新しい順序での実機動作は未検証です。
+
+詳細は [visionの手順書](../vision_pkg/README_realtime_ja.md#到達後の自動収穫サイクル2026-11-17変更) を参照してください。以下の `module/set_params.yaml` と `n` の説明は、単独EE・旧iPad経路など `sequenced_z_cycle:=false` の従来モード用です。
+
 2026-11-12更新。起動時の`c`押下を廃止し、直動を引き込んでNCリミットを検出するとENC4を0に設定します。ROSノードは既存の`auto_harvest`を使い、追加しません。
 
 EEの自動動作・PWM・センサー・原点復帰・サーボ校正値は`module/set_params.yaml`の`auto_harvest`にまとめています。Picoのシリアル番号とボーレートは同ファイルの`EE_params`を共用します。

@@ -82,6 +82,14 @@ can_mixed_backend:
 
 ## ビルドと起動
 
+### q3の起動時保持確認（2026-11-17修正）
+
+`DXL q3 startup hold readback mismatch` は、トルクON前に設定した現在位置の保持目標を確認できず、起動を中止したことを示します。ログの `initial=1264, goals=[1265,...], present_now=1264` は1カウント差です。以前は設定で1カウントを許容していても、追加確認で現在位置と目標の完全一致を要求していました。
+
+現在は `dxl_params.startup_hold_tolerance_ticks: 1` の範囲内（約0.088度）で、目標の読戻しと現在位置の差、および両者と起動時位置の差を確認します。トルク状態が変わらず、実測位置が可動範囲内であることも要求し、2回連続で成立した場合だけトルクONへ進みます。`0`なら完全一致です。目標を実測変動に追従させて書き直す処理はありません。
+
+`dxl_params.startup_readback_timeout_ms` の既定値・設定値は250msです。許容差を超える変動や読戻し不一致、通信異常は起動失敗とし、トルクONしません。通常のvision launchでは `src/vision_pkg/config/vision_xy_tracking.yaml` を、円デモ等では `config/xy_robot_config.yaml` を参照します。今回の修正後の実機起動は未確認です。
+
 ## 関節角の読み取りと一軸ずつの範囲確認
 
 `can_joint_range_tool`はq1/q2のRMD出力角と校正換算した関節角、q3 Dynamixel ID 5の関節角を表示します。通常起動は読み取り専用です。読み取り専用でもArduinoのUSBシリアルを開くためUnoが再起動しますが、RMDはファームウェアの起動時停止状態のままで、ARM・移動指令やDynamixelのトルクONを要求しません。先にアームを操作する他ノードやシリアルモニターを終了してください。

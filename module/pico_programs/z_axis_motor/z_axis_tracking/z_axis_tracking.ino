@@ -71,10 +71,11 @@ bool beginMove(long mm,float speedMmS,unsigned long id){
   phase=MOVE;
   return true;
 }
-bool beginHome(unsigned long id){
+bool beginHome(unsigned long id,float homeSpeedMmS=5.f){
   if(moving()){reject("BUSY_NO_QUEUE");return false;}
   if(!powered){reject("POWER_OFF");return false;}
-  homed=false;commandId=id;fault="NONE";speed=0.f;maxSpeed=5.f;
+  if(!isfinite(homeSpeedMmS)||homeSpeedMmS<0.5f||homeSpeedMmS>20.f){reject("HOME_SPEED_RANGE");return false;}
+  homed=false;commandId=id;fault="NONE";speed=0.f;maxSpeed=homeSpeedMmS;
   homeTravel=0;motionStart=millis();lastStepUs=lastRampUs=micros();
   phase=limitActive()?HOME_RELEASE:HOME_SEEK;
   return true;
@@ -90,6 +91,12 @@ void parse(const char *line){
     double rate=strtod(rateText,&end);
     if(end==rateText || *end!='\0'){reject("MALFORMED_SPEED");return;}
     modern=true;lastHost=millis();if(beginMove(mm,static_cast<float>(rate),id))state();return;
+  }
+  if(sscanf(line,"ZHOME,%lu,%31s%c",&id,rateText,&tail)==2){
+    char *end=nullptr;
+    double rate=strtod(rateText,&end);
+    if(end==rateText || *end!='\0'){reject("MALFORMED_HOME_SPEED");return;}
+    modern=true;lastHost=millis();if(beginHome(id,static_cast<float>(rate)))state();return;
   }
   if(sscanf(line,"ZHOME,%lu%c",&id,&tail)==1){
     modern=true;lastHost=millis();if(beginHome(id))state();return;

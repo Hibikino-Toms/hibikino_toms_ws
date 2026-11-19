@@ -110,8 +110,12 @@ class XYTracker(Node):
                 float(startup.get("arrival_tolerance_rad", math.radians(1.0))))
         self.harvest = None
         if self.get_parameter("harvest_cycle_enabled").value:
-            self.harvest = HarvestCycle(self.config.get("harvest_cycle", {}),
-                [math.radians(float(q)) for q in startup["demo_joints_deg"]], self.solver.limits,
+            cycle_settings = self.config.get('harvest_cycle', {})
+            if cycle_settings.get('automatic_sequence', False) and not self.get_parameter('z_tracking_enabled').value:
+                raise ValueError('automatic harvest sequence requires z_tracking_enabled:=true')
+            return_key = 'home_joints_deg' if cycle_settings.get('automatic_sequence', False) else 'demo_joints_deg'
+            self.harvest = HarvestCycle(cycle_settings,
+                [math.radians(float(q)) for q in startup[return_key]], self.solver.limits,
                 float(self.get_parameter("max_joint_velocity_rad_s").value),
                 float(self.get_parameter("max_joint_acceleration_rad_s2").value))
         self.harvest_observation = None
@@ -174,6 +178,8 @@ class XYTracker(Node):
                                                  qos, callback_group=self.goal_group)
         self.xy_hold_sub = self.create_subscription(Empty, '/arm_xy/xy_hold',
             self.xy_hold_callback, qos, callback_group=self.goal_group)
+        self.vision_hold_sub = self.create_subscription(String, '/arm_xy/vision_hold',
+            self.vision_hold_callback, qos, callback_group=self.goal_group)
         self.command_pub = self.create_publisher(Float64MultiArray, "/arm_xy/command_joints", 10)
         self.diagnostic_pub = self.create_publisher(String, "/arm_xy/diagnostics", 10)
         self.actual_pub = self.create_publisher(PoseStamped, "/arm_xy/actual", 10)
@@ -206,7 +212,7 @@ class XYTracker(Node):
                 self.harvest_alive_callback, 1, callback_group=self.control_group)
             self.harvest_services = [self.create_service(Trigger, "/arm_xy/harvest/"+action,
                 lambda req, res, action=action: self.harvest_request(action, res),
-                callback_group=self.control_group) for action in ("hold", "pull", "resume")]
+                callback_group=self.control_group) for action in ("hold", "pull", "resume", "lift", "home_z")]
         self.ready_pub.publish(Bool(data=False))
         rate = float(self.get_parameter("control_rate_hz").value)
         if not math.isfinite(rate) or rate <= 0:
@@ -280,7 +286,7 @@ class XYTracker(Node):
         return float(self.get_parameter('plane_z_m').value)
 
     def z_observation_callback(self, msg):
-        if not self.tracking_ready:
+        if not self.tracking_ready or (self.harvest is not None and self.harvest.state != 'APPROACH'):
             return
         try:
             data = json.loads(msg.data)
@@ -293,6 +299,8 @@ class XYTracker(Node):
         except (ValueError, KeyError, TypeError):
             return
         with self.goal_lock:
+            if self.harvest is not None and self.harvest.state != 'APPROACH':
+                return
             self.z_control.observe_pixel(*values, stamp, time.monotonic())
 
     def z_home_callback(self, request, response):
@@ -324,8 +332,26 @@ class XYTracker(Node):
             control_now = time.monotonic()
             ros_now = self.get_clock().now().nanoseconds/1e9
             control.xy_hold_target = list(measured if self.z_hold_command is None else self.z_hold_command)
-            owns = control.step(control_now, ros_now, measured,
-                allowed=self.harvest is None or self.harvest.state in ('STARTUP', 'APPROACH'))
+            cycle = self.harvest
+            if cycle is not None and cycle.state in ('LIFTING', 'Z_HOMING'):
+                if cycle.pending == 'hold' or not cycle.ee_alive(control_now):
+                    control.fail('operator_hold_or_ee_heartbeat_lost_during_sequence_z')
+                    done = False
+                else:
+                    done = control.step_sequence(control_now, ros_now, measured,
+                        'lift' if cycle.state == 'LIFTING' else 'home',
+                        float(cycle.settings['post_arrival_lift_m']))
+                if done:
+                    lifting = cycle.state == 'LIFTING'
+                    cycle.hold_settled = 0
+                    cycle.transition('HARVEST_HOLD' if lifting else 'CYCLE_READY',
+                        'post_arrival_lift_complete' if lifting else 'cycle_complete_wait_for_c', control_now)
+                    self.harvest_epoch = ros_now
+                    self.harvest_observation = None
+                owns = control.owns_xy
+            else:
+                owns = control.step(control_now, ros_now, measured,
+                    allowed=cycle is None or cycle.state in ('STARTUP', 'APPROACH'))
             if owns or self.z_hold_command is not None:
                 self.latest = None
                 self.last_velocity = [0., 0., 0.]
@@ -381,13 +407,19 @@ class XYTracker(Node):
 
     def harvest_request(self, action, response):
         response.success, response.message = self.harvest.request(action, time.monotonic())
+        if (response.success and action == 'hold' and self.z_control is not None and
+                self.harvest.state in ('LIFTING', 'Z_HOMING')):
+            self.z_control.stop_pending = True
+            self.z_control.stop_reason = 'operator_hold_during_sequence_z'
         return response
 
     def publish_harvest_state(self):
         cycle = self.harvest
         payload = dict(state="DISABLED" if cycle is None else cycle.state,
                        sequence=0 if cycle is None else cycle.sequence,
-                       hold_ready=False if cycle is None else cycle.hold_settled >= 3,
+                       hold_ready=False if cycle is None else (
+                           cycle.state in ('HARVEST_HOLD', 'RETURNED', 'CYCLE_READY') and cycle.hold_settled >= 3),
+                       automatic_sequence=False if cycle is None else cycle.settings['automatic_sequence'],
                        reason="disabled" if cycle is None else cycle.reason,
                        stamp=self.get_clock().now().nanoseconds/1e9)
         self.harvest_state_pub.publish(String(data=json.dumps(payload)))
@@ -456,11 +488,32 @@ class XYTracker(Node):
     def xy_hold_callback(self, msg):
         self.hold_callback(msg, stop_z=False)
 
+    def vision_hold_callback(self, msg):
+        """Observation rejection is a recoverable hold, distinct from manual stop."""
+        try:
+            data = json.loads(msg.data)
+            stamp = float(data['stamp'])
+            reason = data['reason']
+            now = self.get_clock().now().nanoseconds/1e9
+            if (not math.isfinite(stamp) or not -.05 <= now-stamp <= .5 or
+                    not isinstance(reason, str) or not reason):
+                return
+        except (ValueError, KeyError, TypeError):
+            return
+        with self.goal_lock:
+            if not self.tracking_ready or (self.harvest is not None and self.harvest.state != 'APPROACH'):
+                return
+            self.latest = None
+            self.hold_requested = True
+            if self.z_control is not None:
+                self.z_control.request_observation_hold(reason)
+
     def hold_callback(self, _msg, stop_z=True):
         with self.goal_lock:
             control = getattr(self, 'z_control', None)
             if (stop_z and control is not None and self.tracking_ready and
-                    control.phase in ('STOPPING_XY', 'MOVING_Z', 'STOPPING_Z', 'WAITING_IMAGE', 'SETTLING')
+                    control.phase in ('STOPPING_XY', 'MOVING_Z', 'STOPPING_Z', 'WAITING_IMAGE', 'SETTLING', 'OBSERVATION_HOLD',
+                                      'SEQUENCE_LIFT', 'SEQUENCE_HOMING', 'SEQUENCE_SETTLING')
                     and not control.homing):
                 if not control.stop_pending:
                     control.stop_reason = 'arm_xy_hold_received_during_z'

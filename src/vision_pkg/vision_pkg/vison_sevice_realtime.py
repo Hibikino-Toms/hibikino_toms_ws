@@ -134,6 +134,7 @@ class RealtimeTomatoDetector(Node):
             PoseStamped, str(self.target_cfg.get("goal_topic", "/arm_xy/goal")), 1)
         self.hold_pub = self.create_publisher(Empty, "/arm_xy/hold", 1)
         self.xy_hold_pub = self.create_publisher(Empty, '/arm_xy/xy_hold', 1)
+        self.vision_hold_pub = self.create_publisher(String, '/arm_xy/vision_hold', 1)
         self.diag_pub = self.create_publisher(String, "/vision/servo_diagnostics", 10)
         self.ready_sub = self.create_subscription(Bool, "/arm_xy/ready", self.ready_callback,
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -271,7 +272,8 @@ class RealtimeTomatoDetector(Node):
         try:
             data = json.loads(msg.data)
             state, sequence, stamp = data['state'], int(data['sequence']), float(data['stamp'])
-            if state not in ('STARTUP', 'APPROACH', 'HARVEST_HOLD', 'RETURNING', 'RETURNED', 'FAULT', 'DISABLED') or not math.isfinite(stamp):
+            if state not in ('STARTUP', 'APPROACH', 'HARVEST_HOLD', 'LIFTING', 'Z_HOMING',
+                             'CYCLE_READY', 'RETURNING', 'RETURNED', 'FAULT', 'DISABLED') or not math.isfinite(stamp):
                 return
             if self.harvest_status is not None and stamp <= self.harvest_status[3]:
                 return
@@ -477,10 +479,14 @@ class RealtimeTomatoDetector(Node):
             self.servo.depths.clear()
         if xy_only:
             self.xy_hold_pub.publish(Empty())
+        elif reason != 'approach_target_changed':
+            self.vision_hold_pub.publish(String(data=json.dumps(dict(
+                stamp=self.get_clock().now().nanoseconds/1e9, reason=reason))))
         else:
             self.hold_pub.publish(Empty())
         self.diag['reason'] = reason
         self.diag['hold_scope'] = 'xy_only' if xy_only else 'all_axes'
+        self.diag['hold_recoverable'] = not xy_only and reason != 'approach_target_changed'
         # A single rejected frame can stop Z. The 5-second FPS summary cannot
         # explain that event, so record its reason and measurements at source.
         if reason != 'arm_not_ready' and not reason.startswith('harvest_'):

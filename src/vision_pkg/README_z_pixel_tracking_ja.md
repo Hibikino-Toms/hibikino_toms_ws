@@ -58,6 +58,7 @@ z_tracking:
 | `move_timeout_sec` | 複数区間・画像待ちを含む補正全体の時間上限。既定30秒 |
 | `min_position_m` / `max_position_m` | 原点からのパルス位置のソフト制限。既定5～450mm |
 | `observation_timeout_sec` | 縦画素観測の許容経過時間。既定0.30秒 |
+| `observation_recovery_samples` | 観測欠損で停止した後、再開に必要な新しい有効画像数。既定3。停止前の画像は数えない |
 | `xy_stop_speed_rad_s` / `xy_stop_samples` | Z開始前のXY実測停止確認。窓全体の角度差÷経過時間が0.02rad/s以下、かつ位置幅・保持誤差の条件を3周期続けて満たす |
 | `xy_stop_window_sec` | 保持後に計測する停止確認の時間窓。既定0.50秒 |
 | `xy_stop_position_tolerance_rad` | 窓内の最大角−最小角、保持目標からの実測誤差、の両方の上限。既定0.0035rad（約0.20度） |
@@ -67,6 +68,7 @@ z_tracking:
 | `communication_timeout_sec` | Z状態通信のタイムアウト。既定0.60秒 |
 | `serial_number` / `baudrate` | Z用Picoの選択。E6613008E3567336 / 115200 |
 | `home_timeout_sec` | 原点復帰時間上限。既定120秒 |
+| `home_speed_m_s` | 原点復帰速度。統合YAMLは0.010（10mm/s）、省略時5mm/s。速度指定対応のPicoファームウェア更新が必要 |
 | `sim_initial_position_m` / `sim_homed` | 模擬Zの開始位置225mm／原点確定true |
 
 設定を変更したらlaunchを再起動してください。Z位置・移動量・速度の単位はmと秒、画像観測は明示的にpxです。旧 `trigger_error_m` / `max_correction_m` は現在のZ画素制御では使いません。
@@ -121,7 +123,13 @@ ros2 service call /arm_xy/z/stop std_srvs/srv/Trigger '{}'
 
 **Z補正は2D検出だけで実行します。** 対象内深度の欠損・外れ値・深度フレーム欠損を理由としてZ補正を中断しません。XYも、既定の `target.image_approach.enabled: true` では遠距離の左右合わせ・接近に深度を必要としません。Z補正完了後はXYの画像接近を再開します。近距離の深度を一度得た後は、欠損時に保持し、画像だけの前進には戻しません。詳細は [画像接近の手順書](README_image_approach_ja.md) を参照してください。画像接近を無効にした場合は、従来どおりXYに有効深度が必要です。
 
-対象消失、識別の曖昧さ、古い画像、姿勢時刻ずれ、カメラ異常は全軸保持を要求します。Z補正中ならZも停止して異常をラッチします。対象IDが変わった場合もZを止め、別の対象へ乗り換えません。Z通信異常、位置範囲外、累積移動上限・時間上限でも保持し、自動再試行やトルクOFFは行いません。表示画素だけで物理的な到達距離や衝突安全性は保証できません。
+対象消失、識別の曖昧さ、古い画像、姿勢時刻ずれ、カメラ異常は全軸保持を要求します。2026-11-17のログでは、Z補正中の `detection_count=0` に対する保持要求が `arm_xy_hold_received_during_z` となり、1回の未検出で再起動必須になっていました。
+
+現在は観測不良を `/arm_xy/vision_hold`（`std_msgs/String`、JSONの `stamp` と `reason`）で通知し、Zを停止して `OBSERVATION_HOLD` に入ります。この間はXYも保持します。Zの `busy=false` を確認した後に撮影された、有効かつ新しい画像を `observation_recovery_samples` 回確認し、XY停止確認を経て補正を再開します。画像が戻らなければ保持を続け、古い位置へ移動しません。進行中だったZ目標は取り消し、最新の画像で次の区間を計算します。補正サイクルの累積移動上限は保持前から引き継ぎ、保持中の待ち時間だけを動作時間上限から除外します。
+
+同じ対象の短い未検出からの復帰だけを許可します。`target.lost_timeout_sec` を超えて再割当てされたIDや別対象への変更は従来どおり停止し、自動で乗り換えません。Z通信異常、位置範囲外、停止失敗、累積移動上限・動作時間上限、明示停止（`/arm_xy/hold` または `/arm_xy/z/stop`）では異常をラッチします。トルクOFFは追加していません。表示画素だけで物理的な到達距離や衝突安全性は保証できません。
+
+`/arm_xy/z/state` の `phase` / `reason` / `recovery_samples` / `required_recovery_samples` で保持と復帰待ちを確認できます。今回の修正にPicoの書き換えは不要です。trackerとvisionの両パッケージをビルドし直してから再起動してください。今回の修正後の実機動作は未確認です。
 
 収穫保持／復帰中はZ補正を行わず、初期姿勢への復帰でZを自動的に初期高さへ戻しません。
 

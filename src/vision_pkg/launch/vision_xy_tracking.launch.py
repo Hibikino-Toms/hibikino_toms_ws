@@ -37,7 +37,7 @@ def nodes(context):
 
     defaults = dict(backend='sim', startup_mode='configured', synthetic_camera=False,
                     show_window=True, z_tracking_enabled=False, harvest_cycle_enabled=True,
-                    require_ee_ready=False)
+                    require_ee_ready=False, auto_harvest_enabled=False)
     unknown = set(config['launch'])-set(defaults)
     if unknown:
         raise RuntimeError(f'Unknown launch settings: {sorted(unknown)}')
@@ -61,6 +61,13 @@ def nodes(context):
     synthetic = options['synthetic_camera']
     if synthetic and backend != 'sim':
         raise RuntimeError('synthetic_camera is allowed only with backend:=sim')
+    automatic = options['auto_harvest_enabled'] and options['harvest_cycle_enabled']
+    if automatic:
+        if not options['z_tracking_enabled'] or config.get('harvest_cycle', {}).get('automatic_sequence') is not True:
+            raise RuntimeError('automatic harvest requires z_tracking_enabled=true and harvest_cycle.automatic_sequence=true')
+        if not isinstance(config.get('auto_harvest'), dict) or not isinstance(config.get('EE_params'), dict):
+            raise RuntimeError('automatic harvest requires auto_harvest: and EE_params: in the unified YAML')
+        options['require_ee_ready'] = True
     vision_override = LaunchConfiguration('vision_config').perform(context).strip()
     vision_path = Path(vision_override).expanduser().resolve() if vision_override else config_path
     if not vision_path.is_file():
@@ -77,7 +84,13 @@ def nodes(context):
     message = f'Unified tracking config: {config_path}'
     if vision_override:
         message += f'; legacy vision_config override: {vision_path}'
-    return [LogInfo(msg=message),
+    result = [LogInfo(msg=message)]
+    if automatic:
+        result.append(Node(package='end_effector_pkg', executable='auto_harvest', name='auto_harvest',
+            output='screen', emulate_tty=True, ros_arguments=['--log-level', 'WARN'], parameters=[{
+                'config_file': str(config_path), 'backend': 'sim' if backend == 'sim' else 'serial',
+                'keyboard_enabled': True, 'auto_confirm_sim_home': True, 'sequenced_z_cycle': True}]))
+    result.extend([
             Node(package='arm_controller_pkg', executable='arm_xy_tracker', output='screen',
                  parameters=[tracking]),
             Node(package='vision_pkg', executable='vision_service_realtime', output='screen',
@@ -85,7 +98,8 @@ def nodes(context):
                               'z_tracking_enabled': options['z_tracking_enabled'],
                               'synthetic_camera': synthetic,
                               'harvest_cycle_enabled': options['harvest_cycle_enabled'],
-                              'show_window': options['show_window']}])]
+                              'show_window': options['show_window']}])])
+    return result
 
 
 def generate_launch_description():
@@ -97,6 +111,8 @@ def generate_launch_description():
         DeclareLaunchArgument('startup_mode', default_value=''),
         DeclareLaunchArgument('harvest_cycle_enabled', default_value=''),
         DeclareLaunchArgument('require_ee_ready', default_value=''),
+        DeclareLaunchArgument('auto_harvest_enabled', default_value='',
+            description='Start EE lift/harvest/home/stow/Z-home cycle; c starts the next cycle'),
         DeclareLaunchArgument('synthetic_camera', default_value=''),
         DeclareLaunchArgument('show_window', default_value=''),
         DeclareLaunchArgument('z_tracking_enabled', default_value='',
